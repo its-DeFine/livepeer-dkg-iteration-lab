@@ -21,12 +21,16 @@ export class FileDkgAdapter implements DkgAdapter {
   constructor(private readonly store: JsonStateStore) {}
 
   async writeState(state: DemoState): Promise<DkgWriteResult> {
-    const runLedgerReference = await this.store.writeJson("run-ledger-ka.jsonld", state.runLedger);
+    const version = Math.max(1, state.attempts.length);
+    const prefix = `snapshots/${state.projectId}/try-${version}`;
+    const runLedgerReference = await this.store.writeJson(`${prefix}/run-ledger-ka.jsonld`, state.runLedger);
     const improvementMemoryReference = await this.store.writeJson(
-      "improvement-memory-ka.jsonld",
+      `${prefix}/improvement-memory-ka.jsonld`,
       state.improvementMemory
     );
-    const receiptReference = await this.store.writeJson("submission-receipt.json", state.receipt);
+    await this.store.writeText(`${prefix}/run-ledger-ka.ttl`, buildRunLedgerTurtle(state));
+    await this.store.writeText(`${prefix}/improvement-memory-ka.ttl`, buildImprovementMemoryTurtle(state));
+    const receiptReference = await this.store.writeJson(`receipts/${state.projectId}.json`, state.receipt);
 
     return {
       runLedgerReference,
@@ -289,7 +293,7 @@ function redactDkgError(error: unknown): string {
     .slice(0, 1000);
 }
 
-function buildRunLedgerTurtle(state: DemoState): string {
+export function buildRunLedgerTurtle(state: DemoState): string {
   const target = targetIri(state);
   const lines = [prefixes()];
 
@@ -298,6 +302,11 @@ function buildRunLedgerTurtle(state: DemoState): string {
   lines.push(`  il:targetId ${literal(state.target.id)} ;`);
   lines.push(`  il:brief ${literal(state.target.brief)} ;`);
   lines.push(`  il:targetScore ${state.target.targetScore} .`);
+  lines.push(`${target} il:mediaType ${literal(state.target.mediaType)} .`);
+  lines.push(`${target} il:aspectRatio ${literal(state.target.aspectRatio)} .`);
+  if (state.target.durationSeconds) {
+    lines.push(`${target} il:durationSeconds ${state.target.durationSeconds} .`);
+  }
 
   for (const criterion of state.target.successCriteria) {
     lines.push(`${target} il:successCriterion ${literal(criterion)} .`);
@@ -319,6 +328,8 @@ function attemptTurtle(state: DemoState, attempt: AttemptRecord): string {
     `  il:forTarget ${targetIri(state)} ;`,
     `  il:attemptNumber ${attempt.attemptNumber} ;`,
     `  il:usedDkgMemory ${attempt.usedDkgMemory ? "true" : "false"} ;`,
+    `  il:mediaType ${literal(attempt.mediaType)} ;`,
+    `  il:generationCapability ${literal(attempt.generationCapability)} ;`,
     `  il:promptSummary ${literal(attempt.promptSummary)} ;`,
     `  il:promptPreview ${literal(singleLine(attempt.promptPreview))} ;`,
     `  il:outputReference ${literal(attempt.outputReference)} ;`,
@@ -332,7 +343,7 @@ function attemptTurtle(state: DemoState, attempt: AttemptRecord): string {
   ].join("\n");
 }
 
-function buildImprovementMemoryTurtle(state: DemoState): string {
+export function buildImprovementMemoryTurtle(state: DemoState): string {
   const target = targetIri(state);
   const memory = iri(`memory/${state.sessionId}/${state.target.id}`);
   const latest = state.attempts.at(-1);

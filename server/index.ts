@@ -17,32 +17,56 @@ app.get("/api/config", (_request, response) => {
 
 app.get("/api/state", async (_request, response, next) => {
   try {
-    response.json(await director.getState());
+    response.json(await director.getWorkspace());
   } catch (error) {
     next(error);
   }
 });
 
-app.post("/api/reset", async (_request, response, next) => {
+app.post("/api/projects", async (request, response, next) => {
   try {
-    response.json(await director.reset());
+    response.status(201).json(await director.createProject(request.body));
   } catch (error) {
     next(error);
   }
 });
 
-app.post("/api/attempts", async (request, response, next) => {
+app.post("/api/projects/:projectId/select", async (request, response, next) => {
   try {
-    response.json(await director.runAttempt(request.body));
+    response.json(await director.selectProject(request.params.projectId));
   } catch (error) {
     next(error);
   }
 });
 
-app.get("/api/receipt", async (_request, response, next) => {
+app.post("/api/projects/:projectId/attempts", async (request, response, next) => {
   try {
-    const state = await director.getState();
-    response.json(state.receipt);
+    response.json(await director.runAttempt({
+      projectId: request.params.projectId,
+      useDkgMemory: Boolean(request.body?.useDkgMemory)
+    }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/projects/:projectId/dkg/backfill", async (request, response, next) => {
+  try {
+    response.json(await director.backfillProject(request.params.projectId));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/receipt", async (request, response, next) => {
+  try {
+    const workspace = await director.getWorkspace();
+    const projectId = typeof request.query.projectId === "string"
+      ? request.query.projectId
+      : workspace.activeProjectId;
+    const project = workspace.projects.find((candidate) => candidate.projectId === projectId);
+    if (!project) throw new Error("Project not found.");
+    response.json(project.receipt);
   } catch (error) {
     next(error);
   }
@@ -64,9 +88,7 @@ if (process.env.NODE_ENV === "production") {
 }
 
 app.use((error: Error, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
-  response.status(500).json({
-    error: sanitizeError(error)
-  });
+  response.status(500).json({ error: sanitizeError(error) });
 });
 
 app.listen(port, "0.0.0.0", () => {
@@ -75,10 +97,11 @@ app.listen(port, "0.0.0.0", () => {
 
 function sanitizeError(error: Error): string {
   const message = error.message.replace(/Bearer\s+[A-Za-z0-9._-]+/g, "Bearer [redacted]");
-  if (
-    /dkg|knowledge asset|assertion|shared.?memory|triple-count|merkle|promot|context graph/i.test(message)
-  ) {
-    return "The artifact was saved, but the DKG memory snapshot could not be finalized. Your completed iterations are safe; retry the next DKG-backed run.";
+  if (/dkg|knowledge asset|assertion|shared.?memory|triple-count|merkle|promot|context graph/i.test(message)) {
+    return "The artifact was saved, but its DKG snapshot could not be shared. The completed media output remains available in this project.";
   }
-  return message;
+  if (/Livepeer|media job|capability|provider|runner/i.test(message)) {
+    return "The remote media provider did not complete this job. Nothing ran locally; please retry once.";
+  }
+  return message.slice(0, 600);
 }

@@ -1,10 +1,24 @@
 export type RuntimeMode = "mock" | "real";
 export type DkgMode = "file" | "cli";
+export type MediaType = "image" | "video" | "video-audio";
+export type AspectRatio = "1:1" | "16:9" | "9:16";
+
+export interface MediaProfile {
+  mediaType: MediaType;
+  label: string;
+  capability: string;
+  description: string;
+  durationRequired: boolean;
+  nativeAudio: boolean;
+}
 
 export interface TargetSpec {
   id: string;
   title: string;
   brief: string;
+  mediaType: MediaType;
+  durationSeconds?: number;
+  aspectRatio: AspectRatio;
   successCriteria: string[];
   avoid: string[];
   targetScore: number;
@@ -16,6 +30,8 @@ export interface AttemptRecord {
   promptSummary: string;
   promptPreview: string;
   usedDkgMemory: boolean;
+  mediaType: MediaType;
+  generationCapability: string;
   outputReference: string;
   outputHash?: string;
   score: number;
@@ -49,6 +65,14 @@ export interface ImprovementMemoryKa {
   "demo:updatedAt": string;
 }
 
+export interface DkgSnapshotStatus {
+  state: "recorded" | "shared" | "pending" | "failed";
+  layer: "local" | "WM" | "SWM";
+  runLedgerReference?: string;
+  improvementMemoryReference?: string;
+  recordedAt?: string;
+}
+
 export interface IterationSnapshot {
   attemptNumber: number;
   attemptId: string;
@@ -56,10 +80,14 @@ export interface IterationSnapshot {
   artifactHash?: string;
   runLedger: RunLedgerKa;
   improvementMemory: ImprovementMemoryKa;
+  runLedgerRdf: string;
+  improvementMemoryRdf: string;
+  dkg: DkgSnapshotStatus;
   capturedAt: string;
 }
 
 export interface SubmissionReceipt {
+  projectId: string;
   targetId: string;
   exportedAt: string;
   bestAttemptId?: string;
@@ -72,13 +100,21 @@ export interface SubmissionReceipt {
 }
 
 export interface DemoState {
+  projectId: string;
   sessionId: string;
+  createdAt: string;
   target: TargetSpec;
   attempts: AttemptRecord[];
   runLedger: RunLedgerKa;
   improvementMemory: ImprovementMemoryKa;
   iterationSnapshots: IterationSnapshot[];
   receipt: SubmissionReceipt;
+  updatedAt: string;
+}
+
+export interface WorkspaceState {
+  projects: DemoState[];
+  activeProjectId: string;
   updatedAt: string;
 }
 
@@ -89,14 +125,27 @@ export interface ConfigStatus {
   livepeerConfigured: boolean;
   dkgConfigured: boolean;
   judgeConfigured: boolean;
+  mediaProfiles: MediaProfile[];
+}
+
+export interface CreateProjectRequest {
+  title: string;
+  brief: string;
+  mediaType: MediaType;
+  durationSeconds?: number;
+  aspectRatio: AspectRatio;
+  successCriteria: string[];
+  avoid: string[];
+  targetScore: number;
 }
 
 export interface RunAttemptRequest {
-  target?: TargetSpec;
+  projectId?: string;
   useDkgMemory: boolean;
 }
 
 export interface RunAttemptResponse {
+  workspace: WorkspaceState;
   state: DemoState;
   attempt: AttemptRecord;
   memoryUsed: string[];

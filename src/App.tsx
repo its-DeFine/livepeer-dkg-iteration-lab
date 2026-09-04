@@ -1,597 +1,656 @@
+import { useEffect, useMemo, useState } from "react";
 import {
-  Archive,
-  Brain,
-  CheckCircle2,
-  Database,
+  ArrowRight,
+  BrainCircuit,
+  Check,
+  ChevronDown,
   Download,
-  ExternalLink,
-  GitBranch,
-  History,
+  FileJson,
+  Film,
+  Image as ImageIcon,
   Layers3,
-  Loader2,
-  Network,
-  Play,
-  RefreshCcw,
+  LoaderCircle,
+  Music2,
+  Plus,
   ShieldCheck,
   Sparkles,
-  Target,
-  Workflow
+  X,
+  Zap
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import type { ReactNode } from "react";
 import type {
-  AttemptRecord,
+  AspectRatio,
   ConfigStatus,
+  CreateProjectRequest,
   DemoState,
   ImprovementMemoryKa,
-  RunAttemptResponse,
-  RunLedgerKa
+  IterationSnapshot,
+  MediaType,
+  RunLedgerKa,
+  WorkspaceState
 } from "../shared/types";
+import "./styles.css";
 
-const stageCards = [
-  {
-    icon: <Target size={18} />,
-    label: "1. Target",
-    title: "Define the desired output",
-    body: "The Director starts from a product brief, success criteria, and explicit avoid rules."
-  },
-  {
-    icon: <Network size={18} />,
-    label: "2. Livepeer",
-    title: "Generate through remote capability",
-    body: "The app calls Livepeer remotely. No Livepeer capability, renderer, or model runs inside this demo container."
-  },
-  {
-    icon: <ShieldCheck size={18} />,
-    label: "3. Judge",
-    title: "Judge the artifact blind",
-    body: "The judge sees only the artifact and target criteria—not prompts, DKG memory, prior runs, or orchestration context."
-  },
-  {
-    icon: <Database size={18} />,
-    label: "4. DKG",
-    title: "Persist reusable memory",
-    body: "The DKG edge node stores a run ledger and improvement memory so the next attempt can improve."
-  }
-];
+type AssetTab = "ledger" | "memory" | "changes";
+type DataView = "visual" | "jsonld" | "rdf";
+
+const emptyForm: CreateProjectRequest = {
+  title: "",
+  brief: "",
+  mediaType: "image",
+  aspectRatio: "16:9",
+  successCriteria: ["The main subject is clear and immediately understandable."],
+  avoid: ["unreadable text"],
+  targetScore: 8
+};
 
 export function App() {
-  const [state, setState] = useState<DemoState | null>(null);
+  const [workspace, setWorkspace] = useState<WorkspaceState | null>(null);
   const [config, setConfig] = useState<ConfigStatus | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [memoryUsed, setMemoryUsed] = useState<string[]>([]);
-  const [selectedIteration, setSelectedIteration] = useState<number | "current">("current");
+  const [selectedTry, setSelectedTry] = useState(0);
+  const [assetTab, setAssetTab] = useState<AssetTab>("ledger");
+  const [dataView, setDataView] = useState<DataView>("visual");
+  const [creating, setCreating] = useState(false);
+  const [form, setForm] = useState<CreateProjectRequest>(emptyForm);
+  const [busy, setBusy] = useState<"baseline" | "memory" | "create" | null>(null);
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    void loadInitialState();
+    void Promise.all([getJson<WorkspaceState>("/api/state"), getJson<ConfigStatus>("/api/config")])
+      .then(([nextWorkspace, nextConfig]) => {
+        setWorkspace(nextWorkspace);
+        setConfig(nextConfig);
+      })
+      .catch((cause) => setError(messageOf(cause)));
   }, []);
 
-  async function loadInitialState() {
-    setError(null);
-    const [stateResponse, configResponse] = await Promise.all([fetch("/api/state"), fetch("/api/config")]);
-    const loadedState = (await stateResponse.json()) as DemoState;
-    setState(loadedState);
-    setConfig(await configResponse.json());
-    setSelectedIteration(loadedState.iterationSnapshots.at(-1)?.attemptNumber ?? "current");
+  const project = workspace?.projects.find((candidate) => candidate.projectId === workspace.activeProjectId)
+    ?? workspace?.projects[0]
+    ?? null;
+
+  useEffect(() => {
+    if (project) setSelectedTry(Math.max(0, project.attempts.length - 1));
+  }, [project?.projectId, project?.attempts.length]);
+
+  const snapshot = project?.iterationSnapshots[selectedTry] ?? null;
+  const attempt = project?.attempts[selectedTry] ?? null;
+  const previous = selectedTry > 0 ? project?.iterationSnapshots[selectedTry - 1] ?? null : null;
+
+  async function selectProject(projectId: string) {
+    if (!workspace || projectId === workspace.activeProjectId) return;
+    setError("");
+    try {
+      setWorkspace(await postJson<WorkspaceState>(`/api/projects/${encodeURIComponent(projectId)}/select`, {}));
+    } catch (cause) {
+      setError(messageOf(cause));
+    }
   }
 
   async function runAttempt(useDkgMemory: boolean) {
-    setLoading(true);
-    setError(null);
+    if (!project) return;
+    setBusy(useDkgMemory ? "memory" : "baseline");
+    setError("");
     try {
-      const response = await fetch("/api/attempts", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ useDkgMemory })
-      });
-      if (!response.ok) {
-        const payload = (await response.json()) as { error?: string };
-        throw new Error(payload.error ?? "Attempt failed.");
-      }
-      const payload = (await response.json()) as RunAttemptResponse;
-      setState(payload.state);
-      setMemoryUsed(payload.memoryUsed);
-      setSelectedIteration(payload.attempt.attemptNumber);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Attempt failed.");
+      const result = await postJson<{ workspace: WorkspaceState }>(
+        `/api/projects/${encodeURIComponent(project.projectId)}/attempts`,
+        { useDkgMemory }
+      );
+      setWorkspace(result.workspace);
+    } catch (cause) {
+      setError(messageOf(cause));
       try {
-        const stateResponse = await fetch("/api/state");
-        if (stateResponse.ok) {
-          const recoveredState = (await stateResponse.json()) as DemoState;
-          setState(recoveredState);
-          setSelectedIteration(recoveredState.iterationSnapshots.at(-1)?.attemptNumber ?? "current");
-        }
+        setWorkspace(await getJson<WorkspaceState>("/api/state"));
       } catch {
-        // Keep the last rendered state if the recovery read also fails.
+        // Keep the last safe client state if refresh also fails.
       }
     } finally {
-      setLoading(false);
+      setBusy(null);
     }
   }
 
-  async function reset() {
-    setLoading(true);
-    setError(null);
+  async function createProject() {
+    setBusy("create");
+    setError("");
     try {
-      const response = await fetch("/api/reset", { method: "POST" });
-      setState(await response.json());
-      setMemoryUsed([]);
-      setSelectedIteration("current");
+      const request = {
+        ...form,
+        successCriteria: form.successCriteria.map((item) => item.trim()).filter(Boolean),
+        avoid: form.avoid.map((item) => item.trim()).filter(Boolean)
+      };
+      setWorkspace(await postJson<WorkspaceState>("/api/projects", request));
+      setCreating(false);
+      setForm(emptyForm);
+    } catch (cause) {
+      setError(messageOf(cause));
     } finally {
-      setLoading(false);
+      setBusy(null);
     }
   }
-  const iterationView = useMemo(() => {
-    if (!state || selectedIteration === "current") {
-      return state
-        ? {
-            label: "Before first run",
-            attempt: state.attempts.at(-1) ?? null,
-            runLedger: state.runLedger,
-            improvementMemory: state.improvementMemory
-          }
-        : null;
-    }
 
-    const snapshot = state.iterationSnapshots.find((item) => item.attemptNumber === selectedIteration);
-    return snapshot
-      ? {
-          label: `After Try ${snapshot.attemptNumber}`,
-          attempt: state.attempts.find((item) => item.id === snapshot.attemptId) ?? null,
-          runLedger: snapshot.runLedger,
-          improvementMemory: snapshot.improvementMemory
-        }
-      : null;
-  }, [selectedIteration, state]);
-
-  const orchestratorMemory = useMemo(() => {
-    if (memoryUsed.length) {
-      return memoryUsed;
-    }
-    const attempt = iterationView?.attempt;
-    if (!state || !attempt?.usedDkgMemory) {
-      return [];
-    }
-    const previousMemory = state.iterationSnapshots.find(
-      (snapshot) => snapshot.attemptNumber === attempt.attemptNumber - 1
-    )?.improvementMemory;
-    return previousMemory
-      ? [
-          ...previousMemory["demo:knownFailure"],
-          ...previousMemory["demo:successfulPattern"],
-          previousMemory["demo:nextPromptStrategy"]
-        ].filter(Boolean)
-      : [];
-  }, [iterationView, memoryUsed, state]);
-
-  if (!state) {
+  if (!workspace || !config || !project) {
     return (
-      <main className="loading-shell">
-        <Loader2 className="spin" size={24} />
+      <main className="loading-screen">
+        <span className="brand-mark"><Sparkles size={18} /></span>
+        <LoaderCircle className="spin" />
+        <p>{error || "Opening the iteration workspace..."}</p>
       </main>
     );
   }
 
-  const bestScore = state.attempts.reduce((best, attempt) => Math.max(best, attempt.score), 0);
+  const score = attempt?.score ?? 0;
+  const isRunning = busy === "baseline" || busy === "memory";
 
   return (
-    <main className="app-shell">
-      <section className="hero">
-        <div className="hero-copy">
-          <p className="eyebrow">Livepeer + OriginTrail workshop app</p>
-          <h1>Agentic media iteration with DKG memory</h1>
-          <p className="hero-subtitle">
-            A Director orchestrates remote Livepeer generation, remote LLM judging, and DKG-backed memory so each
-            attempt leaves useful evidence for the next one.
-          </p>
-        </div>
-        <div className="hero-aside">
-          <div className="hero-metric">
-            <span>Best result</span>
-            <strong>{bestScore}<small>/10</small></strong>
-            <b>{state.attempts.length} completed {state.attempts.length === 1 ? "run" : "runs"}</b>
-          </div>
-          <div className="status-row" aria-label="Integration status">
-            <StatusPill label="Livepeer" value={config?.livepeerMode ?? "mock"} active={config?.livepeerConfigured} />
-            <StatusPill label="DKG edge" value={config?.dkgMode ?? "file"} active={config?.dkgConfigured} />
-            <StatusPill label="Judge" value={config?.judgeMode ?? "mock"} active={config?.judgeConfigured} />
-          </div>
-        </div>
-      </section>
-
-      {error ? (
-        <div className="error-banner" role="alert">
-          <ShieldCheck size={19} />
-          <div><strong>Memory sync needs another pass</strong><span>{error}</span></div>
-          <button className="notice-close" onClick={() => setError(null)} aria-label="Dismiss message">Close</button>
-        </div>
-      ) : null}
-      {loading ? (
-        <div className="run-banner">
-          <Loader2 className="spin" size={16} />
-          Generating the artifact, running an isolated evaluation, and writing the DKG memory assets.
-        </div>
-      ) : null}
-
-      <section className="command-deck">
-        <div className="command-copy">
-          <p className="history-kicker">Director controls</p>
-          <h2>Run the next iteration</h2>
-          <p>Generate a baseline from the brief, then let the Director retrieve the latest DKG memory for the next try.</p>
-        </div>
-        <div className="command-actions">
-          <div className="button-row">
-            <button onClick={() => runAttempt(false)} disabled={loading} title="Generate from the target brief only">
-              {loading ? <Loader2 className="spin" size={16} /> : <Play size={16} />}
-              Generate baseline
-            </button>
-            <button
-              className="secondary"
-              onClick={() => runAttempt(true)}
-              disabled={loading || state.attempts.length === 0}
-              title="Use the latest Improvement Memory Knowledge Asset"
-            >
-              <Brain size={16} />
-              Improve with DKG
-            </button>
-            <button className="ghost" onClick={reset} disabled={loading} title="Start a fresh demo session">
-              <RefreshCcw size={16} />
-              New session
-            </button>
-          </div>
-          <ScoreStrip attempts={state.attempts} targetScore={state.target.targetScore} />
-        </div>
-      </section>
-
-      <Panel className="history-panel" icon={<History size={18} />} title="Iteration gallery">
-        <div className="history-heading">
-          <div>
-            <p className="history-kicker">Compare every completed run</p>
-            <h2>Artifact and knowledge state, side by side</h2>
-            <p>
-              Pick Try 1, Try 2, or any later run. The artifact and both knowledge-asset snapshots change together.
-            </p>
-          </div>
-          <div className="isolation-note">
-            <ShieldCheck size={18} />
-            <span>
-              <strong>Blind judge</strong>
-              Artifact + target criteria only
-            </span>
-          </div>
-        </div>
-
-        <div className="iteration-tabs" role="tablist" aria-label="Choose an iteration">
-          {state.iterationSnapshots.length ? (
-            state.iterationSnapshots.map((snapshot) => {
-              const attempt = state.attempts.find((item) => item.id === snapshot.attemptId);
-              return (
-                <button
-                  className={selectedIteration === snapshot.attemptNumber ? "iteration-tab active" : "iteration-tab"}
-                  key={snapshot.attemptNumber}
-                  onClick={() => setSelectedIteration(snapshot.attemptNumber)}
-                  role="tab"
-                  aria-selected={selectedIteration === snapshot.attemptNumber}
-                >
-                  <img src={snapshot.artifactReference} alt="" />
-                  <span>
-                    <strong>Try {snapshot.attemptNumber}</strong>
-                    <small>
-                      {snapshot.improvementMemory["demo:latestScore"]}/10 · {attempt?.usedDkgMemory ? "DKG memory" : "Target only"}
-                    </small>
-                  </span>
-                </button>
-              );
-            })
-          ) : (
-            <span className="no-iterations">Run the first attempt to start the gallery.</span>
-          )}
-        </div>
-
-        {iterationView ? (
-          <IterationInspector
-            label={iterationView.label}
-            attempt={iterationView.attempt}
-            runLedger={iterationView.runLedger}
-            improvementMemory={iterationView.improvementMemory}
-          />
-        ) : null}
-      </Panel>
-
-      <section className="stage-strip" aria-label="Demo flow">
-        {stageCards.map((stage) => (
-          <article className="stage-card" key={stage.label}>
-            <div className="stage-label">
-              {stage.icon}
-              <span>{stage.label}</span>
-            </div>
-            <strong>{stage.title}</strong>
-            <p>{stage.body}</p>
-          </article>
-        ))}
-      </section>
-
-      <section className="showcase-grid">
-        <Panel className="target-panel" icon={<Target size={18} />} title="Target brief">
-          <h2>{state.target.title}</h2>
-          <p>{state.target.brief}</p>
-          <div className="criteria-list">
-            {state.target.successCriteria.map((criterion) => (
-              <span key={criterion}>{criterion}</span>
-            ))}
-          </div>
-          <div className="avoid-list">
-            <strong>Avoid</strong>
-            <span>{state.target.avoid.join(" · ")}</span>
-          </div>
-        </Panel>
-
-        <Panel className="control-panel" icon={<Sparkles size={18} />} title="Run the loop">
-          <div className="button-row">
-            <button onClick={() => runAttempt(false)} disabled={loading} title="Run the first attempt without DKG memory">
-              {loading ? <Loader2 className="spin" size={16} /> : <Play size={16} />}
-              Run attempt
-            </button>
-            <button
-              className="secondary"
-              onClick={() => runAttempt(true)}
-              disabled={loading || state.attempts.length === 0}
-              title="Use the Improvement Memory Knowledge Asset for the next attempt"
-            >
-              <Brain size={16} />
-              Try with DKG memory
-            </button>
-            <button className="ghost" onClick={reset} disabled={loading} title="Reset the demo state">
-              <RefreshCcw size={16} />
-              New demo session
-            </button>
-          </div>
-          <ScoreStrip attempts={state.attempts} targetScore={state.target.targetScore} />
-        </Panel>
-
-        <Panel className="ledger-panel" icon={<Archive size={18} />} title="Run ledger">
-          <div className="attempt-list">
-            {state.attempts.length === 0 ? (
-              <EmptyAttempt />
-            ) : (
-              state.attempts.map((attempt) => <AttemptRow key={attempt.id} attempt={attempt} />)
-            )}
-          </div>
-        </Panel>
-
-        <Panel className="memory-panel" icon={<GitBranch size={18} />} title="Orchestrator memory readback">
-          <div className="memory-boundary"><ShieldCheck size={16} /> Used by the Director only; never sent to the judge.</div>
-          {orchestratorMemory.length ? (
-            <ul className="memory-used">
-              {orchestratorMemory.map((line) => (
-                <li key={line}>{line}</li>
-              ))}
-            </ul>
-          ) : (
-            <p className="muted">After attempt 1, run “Try with DKG memory” to show the DKG readback changing the next prompt.</p>
-          )}
-        </Panel>
-      </section>
-
-      <section className="receipt-bar">
-        <div>
-          <strong>Submission receipt</strong>
+    <div className="app-shell">
+      <header className="topbar">
+        <a className="brand" href="/" aria-label="Iteration Lab home">
+          <span className="brand-mark"><Sparkles size={17} /></span>
           <span>
-            {state.receipt.attemptCount} attempts, best score {state.receipt.bestScore}/10
+            <strong>Iteration Lab</strong>
+            <small>Livepeer + OriginTrail</small>
           </span>
-        </div>
-        <a href="/api/receipt" target="_blank" rel="noreferrer">
-          <Download size={16} />
-          Export JSON
         </a>
-      </section>
-    </main>
-  );
-}
 
-function Panel({ icon, title, children, className = "" }: { icon: ReactNode; title: string; children: ReactNode; className?: string }) {
-  return (
-    <section className={`panel ${className}`}>
-      <header>
-        <div className="panel-title">
-          {icon}
-          <span>{title}</span>
+        <div className="project-picker">
+          <span>Project</span>
+          <div className="select-wrap">
+            <select value={project.projectId} onChange={(event) => void selectProject(event.target.value)}>
+              {workspace.projects.map((candidate) => (
+                <option key={candidate.projectId} value={candidate.projectId}>{candidate.target.title}</option>
+              ))}
+            </select>
+            <ChevronDown size={15} />
+          </div>
+        </div>
+
+        <div className="top-actions">
+          <div className="integration-pills" aria-label="Integration status">
+            <StatusPill label="Livepeer" active={config.livepeerConfigured} />
+            <StatusPill label="DKG" active={config.dkgConfigured} />
+            <StatusPill label="Blind judge" active={config.judgeConfigured} />
+          </div>
+          <a className="icon-button" href={`/api/receipt?projectId=${encodeURIComponent(project.projectId)}`} title="Export receipt">
+            <Download size={17} />
+          </a>
+          <button className="primary compact" onClick={() => setCreating(true)}>
+            <Plus size={17} /> New project
+          </button>
         </div>
       </header>
-      {children}
-    </section>
-  );
-}
 
-function StatusPill({ label, value, active }: { label: string; value: string; active?: boolean }) {
-  return (
-    <div className={active ? "status-pill active" : "status-pill"}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-      {active ? <CheckCircle2 size={14} /> : null}
-    </div>
-  );
-}
-
-function ScoreStrip({ attempts, targetScore }: { attempts: AttemptRecord[]; targetScore: number }) {
-  const slots = Array.from({ length: Math.max(3, attempts.length) }, (_, index) => index + 1);
-  return (
-    <div className="score-strip" aria-label="Attempt scores">
-      {slots.map((slot) => {
-        const attempt = attempts.find((item) => item.attemptNumber === slot);
-        return (
-          <div key={slot} className={attempt ? "score-slot filled" : "score-slot"}>
-            <span>Try {slot}</span>
-            <strong>{attempt ? `${attempt.score}/10` : "-"}</strong>
-            {attempt?.score && attempt.score >= targetScore ? <small>pass</small> : null}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function IterationInspector({
-  label,
-  attempt,
-  runLedger,
-  improvementMemory
-}: {
-  label: string;
-  attempt: AttemptRecord | null;
-  runLedger: RunLedgerKa;
-  improvementMemory: ImprovementMemoryKa;
-}) {
-  return (
-    <div className="iteration-inspector">
-      <section className="artifact-card">
-        <div className="snapshot-title">
-          <span>Produced artifact</span>
-          <b>{label}</b>
+      {error && (
+        <div className="error-banner" role="alert">
+          <span>{error}</span>
+          <button onClick={() => setError("")} aria-label="Dismiss"><X size={16} /></button>
         </div>
-        {attempt ? <OutputPreview attempt={attempt} /> : <EmptyPreview />}
-        {attempt ? (
-          <div className="judge-result">
-            <div className="judge-result-heading">
-              <span><ShieldCheck size={16} /> {attempt.judgeScope === "blind-artifact" ? "Blind judge result" : "Previous judge result"}</span>
-              <strong>{attempt.score}/10</strong>
+      )}
+
+      <main className="workspace-grid">
+        <aside className="iteration-rail">
+          <div className="project-summary">
+            <MediaGlyph type={project.target.mediaType} />
+            <div>
+              <p className="eyebrow">Active project</p>
+              <h2>{project.target.title}</h2>
+              <p>{mediaLabel(project.target.mediaType)} - {project.target.aspectRatio}
+                {project.target.durationSeconds ? ` - ${project.target.durationSeconds}s` : ""}
+              </p>
             </div>
-            <p>{attempt.judgeOutputSummary}</p>
-            <small>
-              {attempt.judgeScope === "blind-artifact"
-                ? "Evaluation input: artifact + target criteria only."
-                : "Recorded before blind-judge isolation; preserved as historical evidence."}
-            </small>
           </div>
-        ) : null}
-      </section>
-      <KnowledgeAssetSnapshot icon={<Archive size={17} />} title="Run Ledger KA" label={label} asset={runLedger}>
-        <p className="asset-stat">{runLedger["demo:hasAttempt"].length} recorded attempts</p>
-        <ol className="snapshot-attempts">
-          {runLedger["demo:hasAttempt"].map((item, index) => (
-            <li key={String(item["@id"] ?? index)}>
-              <span>Try {String(item["demo:attemptNumber"] ?? index + 1)}</span>
-              <strong>{String(item["demo:score"] ?? 0)}/10</strong>
-            </li>
-          ))}
-        </ol>
-      </KnowledgeAssetSnapshot>
-      <KnowledgeAssetSnapshot
-        icon={<Brain size={17} />}
-        title="Improvement Memory KA"
-        label={label}
-        asset={improvementMemory}
-      >
-        <p className="asset-stat">Latest score {improvementMemory["demo:latestScore"]}/10</p>
-        <AssetSection title="Known failures" lines={improvementMemory["demo:knownFailure"]} />
-        <AssetSection title="Successful patterns" lines={improvementMemory["demo:successfulPattern"]} />
-        <AssetSection title="Next prompt strategy" lines={[improvementMemory["demo:nextPromptStrategy"]]} />
-      </KnowledgeAssetSnapshot>
+
+          <div className="rail-heading">
+            <span>Iterations</span>
+            <strong>{project.attempts.length}</strong>
+          </div>
+
+          <div className="timeline">
+            {project.attempts.map((item, index) => (
+              <button
+                key={item.id}
+                className={`timeline-item ${index === selectedTry ? "selected" : ""}`}
+                onClick={() => setSelectedTry(index)}
+              >
+                <span className="timeline-node">{item.pass ? <Check size={13} /> : index + 1}</span>
+                <span className="timeline-copy">
+                  <strong>Try {item.attemptNumber}</strong>
+                  <small>{item.usedDkgMemory ? "With DKG memory" : "Target only"}</small>
+                </span>
+                <span className={`score-mini ${item.pass ? "pass" : ""}`}>{item.score}/10</span>
+              </button>
+            ))}
+            {!project.attempts.length && (
+              <div className="empty-timeline">
+                <span className="timeline-node">1</span>
+                <p>Your first artifact will appear here.</p>
+              </div>
+            )}
+          </div>
+
+          <div className="rail-note">
+            <ShieldCheck size={16} />
+            <p><strong>Private by design</strong>DKG stores structured evidence and references, never raw media or secrets.</p>
+          </div>
+        </aside>
+
+        <section className="artifact-stage">
+          <div className="stage-header">
+            <div>
+              <p className="eyebrow">{attempt ? `Try ${attempt.attemptNumber}` : "Ready to begin"}</p>
+              <h1>{project.target.title}</h1>
+              <p className="brief">{project.target.brief}</p>
+            </div>
+            <div className="run-actions">
+              {!project.attempts.length ? (
+                <button className="primary" disabled={isRunning} onClick={() => void runAttempt(false)}>
+                  {busy === "baseline" ? <LoaderCircle className="spin" size={17} /> : <Zap size={17} />}
+                  Generate baseline
+                </button>
+              ) : (
+                <button className="primary" disabled={isRunning} onClick={() => void runAttempt(true)}>
+                  {busy === "memory" ? <LoaderCircle className="spin" size={17} /> : <BrainCircuit size={17} />}
+                  Improve with DKG
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className={`artifact-frame ${!attempt ? "empty" : ""}`}>
+            {attempt ? (
+              <MediaPreview type={attempt.mediaType} reference={attempt.outputReference} title={project.target.title} />
+            ) : (
+              <div className="empty-artifact">
+                <span><MediaGlyph type={project.target.mediaType} /></span>
+                <h3>Turn this brief into the first artifact</h3>
+                <p>The Director will call Livepeer remotely, ask a blind judge to evaluate the output, then record both DKG assets.</p>
+                <button className="primary" disabled={isRunning} onClick={() => void runAttempt(false)}>
+                  {busy === "baseline" ? <LoaderCircle className="spin" size={17} /> : <Sparkles size={17} />}
+                  Generate Try 1
+                </button>
+              </div>
+            )}
+            {isRunning && (
+              <div className="job-overlay">
+                <LoaderCircle className="spin" />
+                <strong>Remote media job in progress</strong>
+                <span>Generation, blind evaluation, then DKG readback.</span>
+              </div>
+            )}
+          </div>
+
+          {attempt && (
+            <div className="evaluation-card">
+              <div className="score-orb">
+                <strong>{score}</strong><span>/10</span>
+              </div>
+              <div>
+                <div className="evaluation-title">
+                  <p className="eyebrow">Blind evaluation</p>
+                  <span className={attempt.pass ? "pass-label" : "iterate-label"}>
+                    {attempt.pass ? "Target reached" : "Keep iterating"}
+                  </span>
+                </div>
+                <p>{attempt.judgeOutputSummary}</p>
+                <small>The judge received only the artifact and target criteria.</small>
+              </div>
+            </div>
+          )}
+
+          <details className="target-drawer">
+            <summary>
+              <span><Layers3 size={16} /> Target, criteria and generation details</span>
+              <ChevronDown size={16} />
+            </summary>
+            <div className="drawer-grid">
+              <div>
+                <h4>Success criteria</h4>
+                <ul>{project.target.successCriteria.map((item) => <li key={item}>{item}</li>)}</ul>
+              </div>
+              <div>
+                <h4>Avoid</h4>
+                <ul>{project.target.avoid.map((item) => <li key={item}>{item}</li>)}</ul>
+              </div>
+              <div>
+                <h4>Generation</h4>
+                <dl>
+                  <div><dt>Mode</dt><dd>{mediaLabel(project.target.mediaType)}</dd></div>
+                  <div><dt>Format</dt><dd>{project.target.aspectRatio}</dd></div>
+                  <div><dt>Target</dt><dd>{project.target.targetScore}/10</dd></div>
+                  {attempt && <div><dt>Capability</dt><dd>{attempt.generationCapability}</dd></div>}
+                </dl>
+              </div>
+            </div>
+          </details>
+        </section>
+
+        <aside className="dkg-inspector">
+          <div className="inspector-header">
+            <div>
+              <p className="eyebrow">DKG asset observatory</p>
+              <h2>{snapshot ? `State after Try ${snapshot.attemptNumber}` : "Waiting for Try 1"}</h2>
+            </div>
+            {snapshot && <DkgStatus snapshot={snapshot} />}
+          </div>
+
+          <div className="asset-tabs" role="tablist">
+            <button className={assetTab === "ledger" ? "active" : ""} onClick={() => setAssetTab("ledger")}>Run Ledger</button>
+            <button className={assetTab === "memory" ? "active" : ""} onClick={() => setAssetTab("memory")}>Improvement Memory</button>
+            <button className={assetTab === "changes" ? "active" : ""} onClick={() => setAssetTab("changes")}>Changes</button>
+          </div>
+
+          {snapshot ? (
+            <div className="inspector-body">
+              {assetTab !== "changes" && (
+                <div className="view-switch">
+                  {(["visual", "jsonld", "rdf"] as DataView[]).map((view) => (
+                    <button key={view} className={dataView === view ? "active" : ""} onClick={() => setDataView(view)}>
+                      {view === "visual" ? "Visual" : view === "jsonld" ? "JSON-LD" : "RDF"}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {assetTab === "ledger" && (
+                <AssetView
+                  view={dataView}
+                  json={snapshot.runLedger}
+                  rdf={snapshot.runLedgerRdf}
+                  visual={<LedgerVisual ledger={snapshot.runLedger} />}
+                />
+              )}
+              {assetTab === "memory" && (
+                <AssetView
+                  view={dataView}
+                  json={snapshot.improvementMemory}
+                  rdf={snapshot.improvementMemoryRdf}
+                  visual={<MemoryVisual memory={snapshot.improvementMemory} />}
+                />
+              )}
+              {assetTab === "changes" && <ChangesView current={snapshot} previous={previous} />}
+              <div className="asset-footnote">
+                <FileJson size={15} />
+                <span>{assetTab === "memory" ? shortId(snapshot.improvementMemory["@id"]) : shortId(snapshot.runLedger["@id"])}</span>
+                <span>Immutable Try {snapshot.attemptNumber} snapshot</span>
+              </div>
+            </div>
+          ) : (
+            <div className="empty-inspector">
+              <BrainCircuit size={28} />
+              <h3>Two knowledge assets, every time</h3>
+              <p>Run Ledger captures evidence. Improvement Memory carries only useful lessons into the next prompt.</p>
+            </div>
+          )}
+        </aside>
+      </main>
+
+      {creating && (
+        <ProjectModal
+          form={form}
+          setForm={setForm}
+          profiles={config.mediaProfiles}
+          busy={busy === "create"}
+          onClose={() => setCreating(false)}
+          onSubmit={() => void createProject()}
+        />
+      )}
     </div>
   );
 }
 
-function KnowledgeAssetSnapshot({
-  icon,
-  title,
-  label,
-  asset,
-  children
+function ProjectModal({
+  form,
+  setForm,
+  profiles,
+  busy,
+  onClose,
+  onSubmit
 }: {
-  icon: ReactNode;
-  title: string;
-  label: string;
-  asset: RunLedgerKa | ImprovementMemoryKa;
-  children: ReactNode;
+  form: CreateProjectRequest;
+  setForm: (value: CreateProjectRequest) => void;
+  profiles: ConfigStatus["mediaProfiles"];
+  busy: boolean;
+  onClose: () => void;
+  onSubmit: () => void;
 }) {
   return (
-    <section className="snapshot-card">
-      <div className="snapshot-title">
-        <span>{icon}{title}</span>
-        <b>{label}</b>
-      </div>
-      <code>{shortReference(asset["@id"])}</code>
-      <div className="snapshot-content">{children}</div>
-      <details className="json-details">
-        <summary><Layers3 size={15} /> View JSON-LD snapshot</summary>
-        <pre>{JSON.stringify(asset, null, 2)}</pre>
-      </details>
+    <div className="modal-backdrop" role="presentation">
+      <section className="project-modal" role="dialog" aria-modal="true" aria-labelledby="new-project-title">
+        <div className="modal-header">
+          <div><p className="eyebrow">New iteration</p><h2 id="new-project-title">What should the agent create?</h2></div>
+          <button className="icon-button" onClick={onClose} aria-label="Close"><X size={18} /></button>
+        </div>
+
+        <div className="form-grid">
+          <label className="full">Project name
+            <input value={form.title} maxLength={100} placeholder="Aurora product launch" onChange={(event) => setForm({ ...form, title: event.target.value })} />
+          </label>
+          <label className="full">Desired output
+            <textarea value={form.brief} maxLength={1200} rows={4} placeholder="Describe the artifact and the feeling it should create..." onChange={(event) => setForm({ ...form, brief: event.target.value })} />
+          </label>
+
+          <fieldset className="full media-choice">
+            <legend>Output type</legend>
+            <div>
+              {profiles.map((profile) => (
+                <button
+                  type="button"
+                  key={profile.mediaType}
+                  className={form.mediaType === profile.mediaType ? "selected" : ""}
+                  onClick={() => setForm({
+                    ...form,
+                    mediaType: profile.mediaType,
+                    durationSeconds: profile.durationRequired ? Math.max(profile.mediaType === "video-audio" ? 6 : 1, form.durationSeconds ?? 6) : undefined
+                  })}
+                >
+                  <MediaGlyph type={profile.mediaType} />
+                  <strong>{profile.label}</strong>
+                  <span>{profile.description}</span>
+                  {form.mediaType === profile.mediaType && <Check size={15} />}
+                </button>
+              ))}
+            </div>
+          </fieldset>
+
+          <label>Aspect ratio
+            <select value={form.aspectRatio} onChange={(event) => setForm({ ...form, aspectRatio: event.target.value as AspectRatio })}>
+              <option value="16:9">16:9 Landscape</option>
+              <option value="9:16">9:16 Portrait</option>
+              <option value="1:1">1:1 Square</option>
+            </select>
+          </label>
+          {form.mediaType !== "image" && (
+            <label>Duration
+              <select value={form.durationSeconds ?? 6} onChange={(event) => setForm({ ...form, durationSeconds: Number(event.target.value) })}>
+                {[6, 8, 10, 15, 20].map((duration) => <option key={duration} value={duration}>{duration} seconds</option>)}
+              </select>
+            </label>
+          )}
+          <label>Target score
+            <select value={form.targetScore} onChange={(event) => setForm({ ...form, targetScore: Number(event.target.value) })}>
+              {[7, 8, 9, 10].map((score) => <option key={score} value={score}>{score}/10</option>)}
+            </select>
+          </label>
+
+          <ListField
+            label="Success criteria"
+            value={form.successCriteria}
+            placeholder="One visible criterion per line"
+            onChange={(value) => setForm({ ...form, successCriteria: value })}
+          />
+          <ListField
+            label="Avoid"
+            value={form.avoid}
+            placeholder="One thing to avoid per line"
+            onChange={(value) => setForm({ ...form, avoid: value })}
+          />
+        </div>
+
+        <div className="modal-footer">
+          <p><ShieldCheck size={15} /> Media is generated remotely. DKG stores structured evidence and references.</p>
+          <div>
+            <button className="secondary" onClick={onClose}>Cancel</button>
+            <button className="primary" disabled={busy || !form.title.trim() || !form.brief.trim()} onClick={onSubmit}>
+              {busy ? <LoaderCircle className="spin" size={17} /> : <ArrowRight size={17} />}
+              Create project
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ListField({ label, value, placeholder, onChange }: { label: string; value: string[]; placeholder: string; onChange: (value: string[]) => void }) {
+  return (
+    <label className="full">{label}
+      <textarea
+        rows={3}
+        value={value.join("\n")}
+        placeholder={placeholder}
+        onChange={(event) => onChange(event.target.value.split("\n"))}
+      />
+    </label>
+  );
+}
+
+function AssetView({ view, json, rdf, visual }: { view: DataView; json: RunLedgerKa | ImprovementMemoryKa; rdf: string; visual: React.ReactNode }) {
+  if (view === "jsonld") return <pre className="code-view">{JSON.stringify(json, null, 2)}</pre>;
+  if (view === "rdf") return <pre className="code-view">{rdf}</pre>;
+  return <>{visual}</>;
+}
+
+function LedgerVisual({ ledger }: { ledger: RunLedgerKa }) {
+  const attempts = ledger["demo:hasAttempt"];
+  return (
+    <div className="ledger-list">
+      <div className="metric-row"><span>Recorded attempts</span><strong>{attempts.length}</strong></div>
+      {attempts.map((item, index) => (
+        <div className="ledger-row" key={String(item["@id"] ?? index)}>
+          <span className="ledger-index">{index + 1}</span>
+          <div><strong>Try {String(item["demo:attemptNumber"])}</strong><small>{String(item["demo:usedDkgMemory"]) === "true" ? "DKG memory" : "Target only"}</small></div>
+          <span className={item["demo:pass"] ? "pass-label" : "iterate-label"}>{String(item["demo:score"])}/10</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MemoryVisual({ memory }: { memory: ImprovementMemoryKa }) {
+  const failures = memory["demo:knownFailure"];
+  const patterns = memory["demo:successfulPattern"];
+  return (
+    <div className="memory-stack">
+      <div className="metric-row"><span>Latest score</span><strong>{memory["demo:latestScore"]}/10</strong></div>
+      <MemorySection title="Known failures" items={failures} empty="None recorded for this state." tone="warm" />
+      <MemorySection title="Successful patterns" items={patterns} empty="A passing pattern has not been confirmed yet." tone="cool" />
+      <section className="strategy-card">
+        <span><Sparkles size={14} /> Next prompt strategy</span>
+        <p>{memory["demo:nextPromptStrategy"]}</p>
+      </section>
+    </div>
+  );
+}
+
+function MemorySection({ title, items, empty, tone }: { title: string; items: string[]; empty: string; tone: string }) {
+  return (
+    <section className={`memory-section ${tone}`}>
+      <h4>{title}</h4>
+      {items.length ? <ul>{items.map((item) => <li key={item}>{item}</li>)}</ul> : <p>{empty}</p>}
     </section>
   );
 }
 
-function OutputPreview({ attempt }: { attempt: AttemptRecord }) {
-  const previewable = attempt.outputReference.startsWith("http");
+function ChangesView({ current, previous }: { current: IterationSnapshot; previous: IterationSnapshot | null }) {
+  const currentMemory = current.improvementMemory;
+  const previousMemory = previous?.improvementMemory;
+  const addedFailures = difference(currentMemory["demo:knownFailure"], previousMemory?.["demo:knownFailure"] ?? []);
+  const removedFailures = difference(previousMemory?.["demo:knownFailure"] ?? [], currentMemory["demo:knownFailure"]);
+  const addedPatterns = difference(currentMemory["demo:successfulPattern"], previousMemory?.["demo:successfulPattern"] ?? []);
   return (
-    <div className="output-preview">
-      {previewable ? (
-        <img src={attempt.outputReference} alt={`Livepeer output for attempt ${attempt.attemptNumber}`} />
-      ) : (
-        <div className="preview-placeholder">Livepeer output reference created</div>
-      )}
-      <div className="output-meta">
-        <span>{attempt.usedDkgMemory ? "Generated with DKG memory" : "Generated from target only"}</span>
-        <a href={attempt.outputReference} target="_blank" rel="noreferrer">
-          Open output <ExternalLink size={14} />
-        </a>
-        {attempt.outputHash ? <code>{attempt.outputHash.slice(0, 16)}</code> : null}
+    <div className="changes-stack">
+      <div className="change-hero">
+        <span>{previous ? `Try ${previous.attemptNumber}` : "Start"}</span>
+        <strong>{previousMemory?.["demo:latestScore"] ?? 0}/10</strong>
+        <ArrowRight size={16} />
+        <span>Try {current.attemptNumber}</span>
+        <strong>{currentMemory["demo:latestScore"]}/10</strong>
       </div>
-    </div>
-  );
-}
-
-function EmptyPreview() {
-  return (
-    <div className="preview-placeholder tall">
-      <Workflow size={22} />
-      <span>Run an attempt to create the first Livepeer output.</span>
-    </div>
-  );
-}
-
-function EmptyAttempt() {
-  return (
-    <div className="empty-attempt">
-      <Sparkles size={18} />
-      <span>No attempts yet.</span>
-    </div>
-  );
-}
-
-function AttemptRow({ attempt }: { attempt: AttemptRecord }) {
-  return (
-    <article className="attempt-row">
-      <div>
-        <strong>Try {attempt.attemptNumber}</strong>
-        <span>{attempt.usedDkgMemory ? "Used DKG memory" : "Target only"}</span>
-      </div>
-      <p>{attempt.judgeOutputSummary}</p>
-      <a href={attempt.outputReference} target="_blank" rel="noreferrer">
-        Output <ExternalLink size={13} />
-      </a>
-      <b>{attempt.score}/10</b>
-    </article>
-  );
-}
-
-function AssetSection({ title, lines }: { title: string; lines: string[] }) {
-  const visibleLines = lines.filter(Boolean);
-  return (
-    <div className="asset-section">
-      <strong>{title}</strong>
-      {visibleLines.length ? (
-        <ul>
-          {visibleLines.map((line) => <li key={line}>{line}</li>)}
-        </ul>
-      ) : (
-        <span>None yet</span>
+      <ChangeLine label="Run Ledger" value={`+${current.runLedger["demo:hasAttempt"].length - (previous?.runLedger["demo:hasAttempt"].length ?? 0)} attempt`} tone="added" />
+      {addedFailures.map((item) => <ChangeLine key={item} label="Failure added" value={item} tone="added" />)}
+      {removedFailures.map((item) => <ChangeLine key={item} label="Failure resolved" value={item} tone="removed" />)}
+      {addedPatterns.map((item) => <ChangeLine key={item} label="Pattern confirmed" value={item} tone="added" />)}
+      <ChangeLine label="Strategy updated" value={currentMemory["demo:nextPromptStrategy"]} tone="changed" />
+      {!addedFailures.length && !removedFailures.length && !addedPatterns.length && previous && (
+        <p className="no-change">The structured fields are stable; this Try still adds a new immutable run record.</p>
       )}
     </div>
   );
 }
 
-function shortReference(value: string): string {
-  const concise = value.split("/").filter(Boolean).slice(-3).join(" / ") || value;
-  return concise.length > 68 ? `${concise.slice(0, 65)}...` : concise;
+function ChangeLine({ label, value, tone }: { label: string; value: string; tone: string }) {
+  return <div className={`change-line ${tone}`}><span>{label}</span><p>{value}</p></div>;
+}
+
+function DkgStatus({ snapshot }: { snapshot: IterationSnapshot }) {
+  const shared = snapshot.dkg.state === "shared";
+  return (
+    <span className={`dkg-status ${shared ? "shared" : snapshot.dkg.state}`}>
+      <span /> {shared ? `Shared - ${snapshot.dkg.layer}` : snapshot.dkg.state}
+    </span>
+  );
+}
+
+function MediaPreview({ type, reference, title }: { type: MediaType; reference: string; title: string }) {
+  const url = mediaUrl(reference);
+  if (!url) return <div className="reference-only"><Film size={28} /><p>Output reference</p><code>{reference}</code></div>;
+  if (type === "image") return <img src={url} alt={`Generated artifact for ${title}`} />;
+  return <video src={url} controls playsInline aria-label={`Generated artifact for ${title}`} />;
+}
+
+function MediaGlyph({ type }: { type: MediaType }) {
+  if (type === "image") return <ImageIcon size={19} />;
+  if (type === "video-audio") return <Music2 size={19} />;
+  return <Film size={19} />;
+}
+
+function StatusPill({ label, active }: { label: string; active: boolean }) {
+  return <span className={`status-pill ${active ? "active" : ""}`}><i />{label}</span>;
+}
+
+function mediaLabel(type: MediaType): string {
+  return type === "video-audio" ? "Video + audio" : type[0].toUpperCase() + type.slice(1);
+}
+
+function mediaUrl(reference: string): string | null {
+  if (/^https?:\/\//.test(reference)) return reference;
+  if (/^[A-Za-z0-9.-]+\.[A-Za-z]{2,}\//.test(reference)) return `https://${reference}`;
+  return null;
+}
+
+function shortId(value: string): string {
+  const parts = value.split("/");
+  return parts.slice(-2).join(" / ");
+}
+
+function difference(left: string[], right: string[]): string[] {
+  return left.filter((item) => !right.includes(item));
+}
+
+async function getJson<T>(url: string): Promise<T> {
+  const response = await fetch(url);
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || "Request failed.");
+  return payload as T;
+}
+
+async function postJson<T>(url: string, body: unknown): Promise<T> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || "Request failed.");
+  return payload as T;
+}
+
+function messageOf(cause: unknown): string {
+  return cause instanceof Error ? cause.message : "Something went wrong.";
 }

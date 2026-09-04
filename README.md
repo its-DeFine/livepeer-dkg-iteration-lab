@@ -1,6 +1,6 @@
 # Livepeer DKG Iteration Lab
 
-A working demo app for the Livepeer Agent Hackathon.
+A working multi-project demo app for the Livepeer Agent Hackathon. Participants can define a product target, choose image, video, or video with native audio, and inspect exactly how the two DKG Knowledge Assets evolve after every Try.
 
 The app demonstrates a simple agent loop:
 
@@ -10,7 +10,15 @@ The app demonstrates a simple agent loop:
 4. Store distilled lessons in an Improvement Memory Knowledge Asset.
 5. Use that DKG memory to make the next attempt better.
 
-Short version: one Knowledge Asset remembers the evidence; one Knowledge Asset remembers how to improve.
+Short version: one Knowledge Asset remembers the evidence; one Knowledge Asset remembers how to improve. Each project has its own timeline, artifacts, asset snapshots, and export receipt.
+
+## Product Flow
+
+1. Choose **New project** and define the output, media type, format, criteria, avoid rules, and target score.
+2. Generate a baseline through the remote Livepeer capability.
+3. Inspect the artifact and blind-judge result.
+4. Compare the Run Ledger and Improvement Memory in visual, JSON-LD, RDF, and change views.
+5. Run the next Try with DKG memory, or switch projects without losing history.
 
 ## Quick Start
 
@@ -56,13 +64,7 @@ Improvement Memory Knowledge Asset:
 - what style anchors should be reused
 - what the next prompt should try
 
-The app writes reviewable JSON snapshots and RDF/Turtle payloads into the app data directory:
-
-- `run-ledger-ka.jsonld`
-- `improvement-memory-ka.jsonld`
-- `run-ledger-ka.ttl`
-- `improvement-memory-ka.ttl`
-- `submission-receipt.json`
+The app writes immutable, per-project and per-Try JSON-LD and RDF/Turtle snapshots. Receipts are also scoped per project. The UI exposes the same state through visual, JSON-LD, RDF, and before/after change views.
 
 ## Real Integrations
 
@@ -72,7 +74,7 @@ Livepeer:
 
 - Set `LIVEPEER_MODE=real`.
 - Set `LIVEPEER_MCP_URL=https://agent.livepeer.org/api/mcp`.
-- Set `LIVEPEER_CAPABILITY` to an available capability, for example `flux-schnell`.
+- The built-in media profiles use `flux-schnell` for images, `flux-3-draft-t2v` for video, and `ltx-25-t2v-fast` for video with native audio. Each can be overridden with the corresponding runtime capability variable.
 - The app calls the remote Livepeer raw MCP surface. It does not run Livepeer capabilities, models, renderers, or LiveBridge components locally.
 - Keep bearer tokens in the runtime environment, never in Git.
 

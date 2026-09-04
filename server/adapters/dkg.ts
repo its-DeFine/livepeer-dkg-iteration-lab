@@ -321,9 +321,14 @@ export function buildRunLedgerTurtle(state: DemoState): string {
 }
 
 function attemptTurtle(state: DemoState, attempt: AttemptRecord): string {
-  return [
-    `${attemptIri(state, attempt)} a il:LivepeerRun ;`,
+  const run = attemptIri(state, attempt);
+  const artifact = artifactIri(state, attempt);
+  const evaluation = evaluationIri(state, attempt);
+  const lines = [
+    `${run} a il:LivepeerRun ;`,
     `  il:forTarget ${targetIri(state)} ;`,
+    `  il:generatedArtifact ${artifact} ;`,
+    `  il:hasEvaluation ${evaluation} ;`,
     `  il:attemptNumber ${attempt.attemptNumber} ;`,
     `  il:usedDkgMemory ${attempt.usedDkgMemory ? "true" : "false"} ;`,
     `  il:mediaType ${literal(attempt.mediaType)} ;`,
@@ -337,14 +342,32 @@ function attemptTurtle(state: DemoState, attempt: AttemptRecord): string {
     `  il:judgeOutput ${literal(sanitizeDkgMemoryText(attempt.judgeOutputSummary))} ;`,
     `  il:judgeReference ${literal(sanitizeDkgReference(attempt.judgeReference ?? ""))} ;`,
     `  il:judgeScope ${literal(attempt.judgeScope ?? "previous-evaluation")} ;`,
-    `  il:createdAt ${dateTimeLiteral(attempt.createdAt)} .`
-  ].join("\n");
+    `  il:createdAt ${dateTimeLiteral(attempt.createdAt)} .`,
+    `${artifact} a il:MediaArtifact ;`,
+    `  il:reference ${literal(attempt.outputReference)} ;`,
+    `  il:contentHash ${literal(attempt.outputHash ?? "")} ;`,
+    `  il:mediaType ${literal(attempt.mediaType)} .`,
+    `${evaluation} a il:BlindEvaluation ;`,
+    `  il:evaluationScore ${attempt.score} ;`,
+    `  il:passedTarget ${attempt.pass ? "true" : "false"} ;`,
+    `  il:judgeOutput ${literal(sanitizeDkgMemoryText(attempt.judgeOutputSummary))} ;`,
+    `  il:judgeReference ${literal(sanitizeDkgReference(attempt.judgeReference ?? ""))} .`
+  ];
+
+  attempt.memoryUsed.forEach((value, index) => {
+    const input = memoryInputIri(state, attempt, index);
+    lines.push(`${run} il:usedMemoryObservation ${input} .`);
+    lines.push(`${input} a il:MemoryInput ;`);
+    lines.push(`  il:contentHash ${literal(crypto.createHash("sha256").update(value).digest("hex"))} .`);
+  });
+  return lines.join("\n");
 }
 
 export function buildImprovementMemoryTurtle(state: DemoState): string {
   const target = targetIri(state);
   const memory = iri(`memory/${state.sessionId}/${targetFingerprint(state)}`);
   const latest = state.attempts.at(-1);
+  const strategy = strategyIri(state, latest?.attemptNumber ?? 0);
   const lines = [prefixes()];
 
   lines.push(`${memory} a il:ImprovementMemory ;`);
@@ -352,10 +375,24 @@ export function buildImprovementMemoryTurtle(state: DemoState): string {
   lines.push(`  il:latestScore ${state.improvementMemory["demo:latestScore"]} ;`);
   lines.push(`  il:updatedAt ${dateTimeLiteral(state.improvementMemory["demo:updatedAt"])} .`);
 
-  writeMemoryNotes(lines, state, latest, "knownFailure", state.improvementMemory["demo:knownFailure"]);
-  writeMemoryNotes(lines, state, latest, "successfulPattern", state.improvementMemory["demo:successfulPattern"]);
+  state.attempts.forEach((attempt) => {
+    attempt.knowledgeObservations.forEach((item, index) => {
+      const observation = observationIri(state, attempt, index);
+      lines.push(`${memory} il:hasObservation ${observation} .`);
+      lines.push(`${observation} a il:MemoryObservation ;`);
+      lines.push(`  il:forTarget ${target} ;`);
+      lines.push(`  il:fromAttempt ${attemptIri(state, attempt)} ;`);
+      lines.push(`  il:category ${literal(item.category)} ;`);
+      lines.push(`  il:relation ${literal(item.relation)} ;`);
+      if (item.criterionIndex !== undefined) {
+        lines.push(`  il:criterionIndex ${item.criterionIndex} ;`);
+      }
+      lines.push(`  il:body ${literal(sanitizeDkgMemoryText(item.body))} .`);
+    });
+  });
 
-  lines.push(`${iri(`strategy/${state.sessionId}/${targetFingerprint(state)}/${latest?.attemptNumber ?? 0}`)} a il:PromptStrategy ;`);
+  lines.push(`${memory} il:hasStrategy ${strategy} .`);
+  lines.push(`${strategy} a il:PromptStrategy ;`);
   lines.push(`  il:forTarget ${target} ;`);
   if (latest) {
     lines.push(`  il:fromAttempt ${attemptIri(state, latest)} ;`);
@@ -363,24 +400,6 @@ export function buildImprovementMemoryTurtle(state: DemoState): string {
   lines.push(`  il:body ${literal(sanitizeDkgMemoryText(state.improvementMemory["demo:nextPromptStrategy"]))} .`);
 
   return `${lines.join("\n")}\n`;
-}
-
-function writeMemoryNotes(
-  lines: string[],
-  state: DemoState,
-  latest: AttemptRecord | undefined,
-  category: string,
-  notes: string[]
-): void {
-  notes.forEach((note, index) => {
-    lines.push(`${iri(`memory-note/${state.sessionId}/${targetFingerprint(state)}/${latest?.attemptNumber ?? 0}/${category}/${index + 1}`)} a il:MemoryObservation ;`);
-    lines.push(`  il:forTarget ${targetIri(state)} ;`);
-    if (latest) {
-      lines.push(`  il:fromAttempt ${attemptIri(state, latest)} ;`);
-    }
-    lines.push(`  il:category ${literal(category)} ;`);
-    lines.push(`  il:body ${literal(sanitizeDkgMemoryText(note))} .`);
-  });
 }
 
 function scopedKaName(baseName: string, sessionId: string, version: number): string {
@@ -394,6 +413,34 @@ function targetIri(state: DemoState): string {
 function attemptIri(state: DemoState, attempt: Pick<AttemptRecord, "attemptNumber">): string {
   return iri(`attempt/${state.sessionId}/${targetFingerprint(state)}/${attempt.attemptNumber}`);
 }
+function artifactIri(state: DemoState, attempt: Pick<AttemptRecord, "attemptNumber">): string {
+  return iri(`artifact/${state.sessionId}/${targetFingerprint(state)}/${attempt.attemptNumber}`);
+}
+
+function evaluationIri(state: DemoState, attempt: Pick<AttemptRecord, "attemptNumber">): string {
+  return iri(`evaluation/${state.sessionId}/${targetFingerprint(state)}/${attempt.attemptNumber}`);
+}
+
+function memoryInputIri(
+  state: DemoState,
+  attempt: Pick<AttemptRecord, "attemptNumber">,
+  index: number
+): string {
+  return iri(`memory-input/${state.sessionId}/${targetFingerprint(state)}/${attempt.attemptNumber}/${index + 1}`);
+}
+
+function observationIri(
+  state: DemoState,
+  attempt: Pick<AttemptRecord, "attemptNumber">,
+  index: number
+): string {
+  return iri(`observation/${state.sessionId}/${targetFingerprint(state)}/${attempt.attemptNumber}/${index + 1}`);
+}
+
+function strategyIri(state: DemoState, attemptNumber: number): string {
+  return iri(`strategy/${state.sessionId}/${targetFingerprint(state)}/${attemptNumber}`);
+}
+
 
 function legacyTargetIri(state: DemoState): string {
   return iri(`target/${state.sessionId}/${state.target.id}`);

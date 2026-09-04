@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import type { TargetSpec } from "../../shared/types.js";
+import type { KnowledgeObservation, TargetSpec } from "../../shared/types.js";
 import type { GenerateMediaOutput } from "./livepeer.js";
 
 export interface JudgeInput {
@@ -10,6 +10,8 @@ export interface JudgeInput {
 export interface JudgeOutput {
   score: number;
   feedback: string;
+  observations: KnowledgeObservation[];
+  nextPromptStrategy: string;
   reference: string;
 }
 
@@ -20,11 +22,25 @@ export interface JudgeAdapter {
 export class MockJudgeAdapter implements JudgeAdapter {
   async judge(input: JudgeInput): Promise<JudgeOutput> {
     const score = 4 + (Number.parseInt(input.media.outputHash.slice(0, 2), 16) % 5);
+    const strong = score >= 7;
     const feedback =
-      score >= 7
+      strong
         ? "The artifact satisfies most visible criteria, with a clear subject, cinematic tone, and a usable composition."
         : "The artifact has a usable direction, but visible product clarity and the final composition need improvement.";
-    return { score, feedback, reference: "mock:judge:blind-artifact" };
+    return {
+      score,
+      feedback,
+      observations: [{
+        category: strong ? "success" : "failure",
+        relation: strong ? "supports" : "needs-improvement",
+        body: feedback,
+        criterionIndex: 0
+      }],
+      nextPromptStrategy: strong
+        ? "Preserve the clear subject and cinematic composition while tightening the final frame."
+        : "Make the main subject explicit and request a cleaner final composition.",
+      reference: "mock:judge:blind-artifact"
+    };
   }
 }
 
@@ -76,11 +92,15 @@ export class LivepeerJudgeAdapter implements JudgeAdapter {
     const parsed = parseJudgeJson(resultText);
     const score = clampScore(parsed.score);
     const feedback = normalizeFeedback(parsed.feedback);
+    const observations = normalizeObservations(parsed.observations, score, feedback);
+    const nextPromptStrategy = normalizeStrategy(parsed.nextPromptStrategy, feedback);
     const resultHash = crypto.createHash("sha256").update(resultText).digest("hex");
 
     return {
       score,
       feedback,
+      observations,
+      nextPromptStrategy,
       reference: "livepeer:" + this.capability + ":" + resultHash.slice(0, 16)
     };
   }
@@ -139,7 +159,9 @@ export function buildJudgePrompt(input: JudgeInput): string {
     "You are an independent media quality judge.",
     "Evaluate only the supplied media artifact against the target brief and visible success criteria.",
     "Do not infer or evaluate how the artifact was generated, its provenance, prior runs, or hidden context.",
-    "Return only compact JSON with this exact shape: {\"score\":number,\"feedback\":string}.",
+    "Return only compact JSON with this exact shape: {\"score\":number,\"feedback\":string,\"observations\":[{\"category\":\"success|failure|constraint|style\",\"relation\":\"supports|needs-improvement|violates|refines\",\"body\":string,\"criterionIndex\":number}],\"nextPromptStrategy\":string}.",
+    "Return 1-3 concise observations. criterionIndex is zero-based and may be omitted when no single criterion applies.",
+    "The next strategy must be a concise instruction derived only from visible qualities in this artifact.",
     "Scoring rubric:",
     "- 1-3: the visible artifact misses most criteria.",
     "- 4-6: the visible artifact partially satisfies the criteria but has major shortcomings.",
@@ -153,7 +175,12 @@ export function buildJudgePrompt(input: JudgeInput): string {
   ].join("\n");
 }
 
-function parseJudgeJson(value: string): { score: unknown; feedback: unknown } {
+function parseJudgeJson(value: string): {
+  score: unknown;
+  feedback: unknown;
+  observations?: unknown;
+  nextPromptStrategy?: unknown;
+} {
   const parsed = parseAnyJson(value);
   if (hasJudgeFields(parsed)) {
     return parsed;
@@ -182,7 +209,12 @@ function parseAnyJson(value: string): unknown {
   throw new Error("Livepeer judge returned non-JSON output: " + value.slice(0, 300));
 }
 
-function hasJudgeFields(value: unknown): value is { score: unknown; feedback: unknown } {
+function hasJudgeFields(value: unknown): value is {
+  score: unknown;
+  feedback: unknown;
+  observations?: unknown;
+  nextPromptStrategy?: unknown;
+} {
   return Boolean(value && typeof value === "object" && "score" in value && "feedback" in value);
 }
 
@@ -200,6 +232,43 @@ function normalizeFeedback(value: unknown): string {
   }
   return value.replace(/\s+/g, " ").trim().slice(0, 500);
 }
+function normalizeObservations(value: unknown, score: number, feedback: string): KnowledgeObservation[] {
+  const categories = new Set(["success", "failure", "constraint", "style"]);
+  const relations = new Set(["supports", "needs-improvement", "violates", "refines"]);
+  const items = Array.isArray(value) ? value : [];
+  const observations = items.flatMap((item): KnowledgeObservation[] => {
+    if (!item || typeof item !== "object") return [];
+    const candidate = item as Record<string, unknown>;
+    const category = String(candidate.category ?? "");
+    const relation = String(candidate.relation ?? "");
+    const body = typeof candidate.body === "string"
+      ? candidate.body.replace(/\s+/g, " ").trim().slice(0, 500)
+      : "";
+    if (!categories.has(category) || !relations.has(relation) || !body) return [];
+    const criterionIndex = Number(candidate.criterionIndex);
+    return [{
+      category: category as KnowledgeObservation["category"],
+      relation: relation as KnowledgeObservation["relation"],
+      body,
+      ...(Number.isInteger(criterionIndex) && criterionIndex >= 0 ? { criterionIndex } : {})
+    }];
+  }).slice(0, 3);
+
+  if (observations.length) return observations;
+  return [{
+    category: score >= 7 ? "success" : "failure",
+    relation: score >= 7 ? "supports" : "needs-improvement",
+    body: feedback
+  }];
+}
+
+function normalizeStrategy(value: unknown, feedback: string): string {
+  if (typeof value === "string" && value.trim()) {
+    return value.replace(/\s+/g, " ").trim().slice(0, 500);
+  }
+  return "Revise the next output using this visible evaluation: " + feedback;
+}
+
 
 function collectResultText(payload: Record<string, unknown>): string {
   const content = (payload.result as { content?: Array<{ text?: string }> } | undefined)?.content;

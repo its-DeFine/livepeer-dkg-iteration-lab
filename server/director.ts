@@ -6,6 +6,7 @@ import type {
   CreateProjectRequest,
   DemoState,
   ImprovementMemoryKa,
+  KnowledgeObservation,
   IterationSnapshot,
   MediaType,
   RunAttemptRequest,
@@ -136,6 +137,7 @@ export function createDirector(dataDir: string) {
   }
 
   async function runAttempt(request: RunAttemptRequest): Promise<RunAttemptResponse> {
+    const userDirection = cleanOptional(request.userDirection, 1200);
     const reservation = await mutateWorkspace((workspace) => {
       const projectId = request.projectId || workspace.activeProjectId;
       const current = requireProject(workspace, projectId);
@@ -177,7 +179,7 @@ export function createDirector(dataDir: string) {
         : [];
       phase = "generation";
       await updateAttemptJob(job.projectId, job.id, { status: "generating", phase });
-      const prompt = buildPrompt(target, memoryUsed, job.attemptNumber);
+      const prompt = buildPrompt(target, memoryUsed, job.attemptNumber, userDirection);
       const media = await livepeer.generate({ attemptNumber: job.attemptNumber, executionId: job.id, prompt, target });
 
       phase = "judging";
@@ -190,8 +192,15 @@ export function createDirector(dataDir: string) {
         attemptNumber: job.attemptNumber,
         promptSummary: describePrompt(target, memoryUsed, job.attemptNumber),
         promptHash: hashValue(prompt),
+        promptText: prompt,
+        promptTextVerified: true,
+        userDirectionApplied: Boolean(userDirection),
         memoryUsed,
         usedDkgMemory: request.useDkgMemory && memoryUsed.length > 0,
+        knowledgeObservations: judgment.observations
+          .map((observation) => ({ ...observation, body: sanitizeDkgMemoryText(observation.body) }))
+          .filter((observation) => Boolean(observation.body)),
+        nextPromptStrategy: sanitizeDkgMemoryText(judgment.nextPromptStrategy),
         mediaType: media.mediaType,
         generationCapability: media.capability,
         outputReference: media.outputReference,
@@ -442,6 +451,10 @@ function cleanRequired(value: unknown, label: string, max: number): string {
   if (!cleaned) throw new Error(`${label} is required.`);
   return cleaned;
 }
+function cleanOptional(value: unknown, max: number): string {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, max) : "";
+}
+
 
 function cleanList(value: unknown, maxItems: number, maxLength: number): string[] {
   if (!Array.isArray(value)) return [];
@@ -502,16 +515,30 @@ function normalizeProject(input: Partial<DemoState> & Pick<DemoState, "target" |
       : attempt.usedDkgMemory && previousMemory
         ? memoryValues(previousMemory)
         : [];
+    const reconstructedPrompt = buildPrompt(target, memoryUsed, attempt.attemptNumber);
+    const promptText = typeof attempt.promptText === "string" && attempt.promptText.trim()
+      ? attempt.promptText
+      : attempt.promptPreview || reconstructedPrompt;
+    const promptHash = attempt.promptHash || hashValue(promptText);
+    const knowledgeObservations = normalizeKnowledgeObservations(attempt, target.targetScore);
+    const latestObservation = sanitizeDkgMemoryText(attempt.judgeOutputSummary);
     const normalized: AttemptRecord = {
       ...attempt,
       promptSummary: describePrompt(target, memoryUsed, attempt.attemptNumber),
-      promptHash: attempt.promptHash || hashValue(attempt.promptPreview || `${attempt.id}:${attempt.attemptNumber}`),
+      promptHash,
+      promptText,
+      promptTextVerified: hashValue(promptText) === promptHash,
+      userDirectionApplied: Boolean(attempt.userDirectionApplied),
       memoryUsed,
+      knowledgeObservations,
+      nextPromptStrategy: sanitizeDkgMemoryText(
+        attempt.nextPromptStrategy || ("Improve the next output using this visible evaluation: " + latestObservation)
+      ),
       usedDkgMemory: Boolean(attempt.usedDkgMemory && memoryUsed.length),
       mediaType: attempt.mediaType || target.mediaType,
       generationCapability: attempt.generationCapability || mediaProfileFor(target.mediaType).capability,
       judgeScope: attempt.judgeScope || "blind-artifact",
-      judgeOutputSummary: sanitizeDkgMemoryText(attempt.judgeOutputSummary)
+      judgeOutputSummary: latestObservation
     };
     delete normalized.promptPreview;
     return normalized;
@@ -616,23 +643,63 @@ function replaceProject(workspace: WorkspaceState, project: DemoState): Workspac
   };
 }
 
-function buildPrompt(target: TargetSpec, memoryUsed: string[], attemptNumber: number): string {
+function buildPrompt(
+  target: TargetSpec,
+  memoryUsed: string[],
+  attemptNumber: number,
+  userDirection = ""
+): string {
   const memoryBlock = memoryUsed.length
     ? `Use these DKG improvement notes: ${memoryUsed.join(" ")}`
     : "No prior DKG improvement memory is available. Make a first attempt from the target only.";
   const mediaInstruction = target.mediaType === "image"
     ? `Create a ${target.aspectRatio} image.`
     : `Create a ${target.durationSeconds ?? 6}-second ${target.aspectRatio} ${target.mediaType === "video-audio" ? "video with native audio" : "video"}.`;
-
-  return [
+  const lines = [
     `Attempt ${attemptNumber}: ${target.brief}`,
     mediaInstruction,
     `Success criteria: ${target.successCriteria.join(" ")}`,
-    `Avoid: ${target.avoid.join(", ")}.`,
-    memoryBlock,
-    "Return a media output that can be judged against the visible criteria."
-  ].join("\n");
+    `Avoid: ${target.avoid.join(", ")}.`
+  ];
+
+  if (userDirection) {
+    lines.push(`Creator direction for this Try: ${userDirection}`);
+  }
+  lines.push(memoryBlock, "Return a media output that can be judged against the visible criteria.");
+  return lines.join("\n");
 }
+function normalizeKnowledgeObservations(
+  attempt: AttemptRecord,
+  targetScore: number
+): KnowledgeObservation[] {
+  const categories = new Set(["success", "failure", "constraint", "style"]);
+  const relations = new Set(["supports", "needs-improvement", "violates", "refines"]);
+  const source = Array.isArray(attempt.knowledgeObservations) ? attempt.knowledgeObservations : [];
+  const normalized = source.flatMap((item): KnowledgeObservation[] => {
+    if (!item || typeof item !== "object") return [];
+    const category = String(item.category ?? "");
+    const relation = String(item.relation ?? "");
+    const body = sanitizeDkgMemoryText(item.body);
+    if (!categories.has(category) || !relations.has(relation) || !body) return [];
+    return [{
+      category: category as KnowledgeObservation["category"],
+      relation: relation as KnowledgeObservation["relation"],
+      body,
+      ...(Number.isInteger(item.criterionIndex) && Number(item.criterionIndex) >= 0
+        ? { criterionIndex: Number(item.criterionIndex) }
+        : {})
+    }];
+  }).slice(0, 12);
+  if (normalized.length) return normalized;
+
+  const body = sanitizeDkgMemoryText(attempt.judgeOutputSummary);
+  return body ? [{
+    category: attempt.score >= targetScore ? "success" : "failure",
+    relation: attempt.score >= targetScore ? "supports" : "needs-improvement",
+    body
+  }] : [];
+}
+
 
 function describePrompt(target: TargetSpec, memoryUsed: string[], attemptNumber: number): string {
   const duration = target.durationSeconds ? `, ${target.durationSeconds}s` : "";
@@ -675,24 +742,47 @@ function buildRunLedger(sessionId: string, target: TargetSpec, attempts: Attempt
     "@type": "demo:RunLedger",
     "demo:targetId": targetRef,
     "demo:sessionId": sessionId,
-    "demo:hasAttempt": attempts.map((attempt) => ({
-      "@id": `demo:attempt/${sessionId}/${targetRef}/${attempt.attemptNumber}`,
-      "@type": "demo:GenerationAttempt",
-      "demo:attemptNumber": attempt.attemptNumber,
-      "demo:promptHash": attempt.promptHash,
-      "demo:memoryObservationCount": attempt.memoryUsed.length,
-      "demo:usedDkgMemory": attempt.usedDkgMemory,
-      "demo:mediaType": attempt.mediaType,
-      "demo:generationCapability": attempt.generationCapability,
-      "demo:outputReference": attempt.outputReference,
-      "demo:outputHash": attempt.outputHash,
-      "demo:score": attempt.score,
-      "demo:pass": attempt.pass,
-      "demo:judgeOutputSummary": sanitizeDkgMemoryText(attempt.judgeOutputSummary),
-      "demo:judgeReference": sanitizeDkgMemoryText(attempt.judgeReference ?? ""),
-      "demo:judgeScope": attempt.judgeScope,
-      "demo:createdAt": attempt.createdAt
-    }))
+    "demo:hasAttempt": attempts.map((attempt) => {
+      const attemptId = `demo:attempt/${sessionId}/${targetRef}/${attempt.attemptNumber}`;
+      return {
+        "@id": attemptId,
+        "@type": "demo:GenerationAttempt",
+        "demo:attemptNumber": attempt.attemptNumber,
+        "demo:promptHash": attempt.promptHash,
+        "demo:memoryObservationCount": attempt.memoryUsed.length,
+        "demo:usedDkgMemory": attempt.usedDkgMemory,
+        "demo:mediaType": attempt.mediaType,
+        "demo:generationCapability": attempt.generationCapability,
+        "demo:outputReference": attempt.outputReference,
+        "demo:outputHash": attempt.outputHash,
+        "demo:score": attempt.score,
+        "demo:pass": attempt.pass,
+        "demo:judgeOutputSummary": sanitizeDkgMemoryText(attempt.judgeOutputSummary),
+        "demo:judgeReference": sanitizeDkgMemoryText(attempt.judgeReference ?? ""),
+        "demo:judgeScope": attempt.judgeScope,
+        "demo:createdAt": attempt.createdAt,
+        "demo:generatedArtifact": {
+          "@id": `demo:artifact/${sessionId}/${targetRef}/${attempt.attemptNumber}`,
+          "@type": "demo:MediaArtifact",
+          "demo:reference": attempt.outputReference,
+          "demo:hash": attempt.outputHash,
+          "demo:mediaType": attempt.mediaType
+        },
+        "demo:hasEvaluation": {
+          "@id": `demo:evaluation/${sessionId}/${targetRef}/${attempt.attemptNumber}`,
+          "@type": "demo:BlindEvaluation",
+          "demo:score": attempt.score,
+          "demo:pass": attempt.pass,
+          "demo:summary": sanitizeDkgMemoryText(attempt.judgeOutputSummary),
+          "demo:reference": sanitizeDkgMemoryText(attempt.judgeReference ?? "")
+        },
+        "demo:usedMemoryObservation": attempt.memoryUsed.map((value, index) => ({
+          "@id": `demo:memory-input/${sessionId}/${targetRef}/${attempt.attemptNumber}/${index + 1}`,
+          "@type": "demo:MemoryInput",
+          "demo:contentHash": hashValue(value)
+        }))
+      };
+    })
   };
 }
 
@@ -708,11 +798,39 @@ function buildImprovementMemory(
     undefined
   );
   const latest = attempts.at(-1);
-  const successful = attempts
-    .filter((attempt) => attempt.score >= target.targetScore)
-    .slice(-3)
-    .map((attempt) => sanitizeDkgMemoryText(attempt.judgeOutputSummary));
-  const latestObservation = latest ? sanitizeDkgMemoryText(latest.judgeOutputSummary) : "";
+  const observationNodes: ImprovementMemoryKa["demo:hasObservation"] = attempts.flatMap((attempt) =>
+    attempt.knowledgeObservations.map((observation, index) => ({
+      "@id": `demo:observation/${sessionId}/${targetRef}/${attempt.attemptNumber}/${index + 1}`,
+      "@type": "demo:MemoryObservation" as const,
+      "demo:category": observation.category,
+      "demo:relation": observation.relation,
+      "demo:body": sanitizeDkgMemoryText(observation.body),
+      "demo:fromAttempt": { "@id": `demo:attempt/${sessionId}/${targetRef}/${attempt.attemptNumber}` },
+      ...(observation.criterionIndex !== undefined
+        ? { "demo:criterionIndex": observation.criterionIndex }
+        : {})
+    }))
+  );
+  const latestAttemptId = latest
+    ? `demo:attempt/${sessionId}/${targetRef}/${latest.attemptNumber}`
+    : "";
+  const latestNodes = observationNodes.filter((node) => node["demo:fromAttempt"]["@id"] === latestAttemptId);
+  const knownFailure = latestNodes
+    .filter((node) => node["demo:category"] === "failure" || node["demo:category"] === "constraint")
+    .map((node) => node["demo:body"]);
+  const successfulPatterns = observationNodes
+    .filter((node) => node["demo:category"] === "success" || node["demo:category"] === "style")
+    .map((node) => node["demo:body"])
+    .slice(-6);
+  const nextPromptStrategy = latest?.nextPromptStrategy ||
+    "Run the first attempt from the target brief, then judge it before creating improvement memory.";
+  const strategy = {
+    "@id": `demo:strategy/${sessionId}/${targetRef}/${latest?.attemptNumber ?? 0}`,
+    "@type": "demo:PromptStrategy" as const,
+    "demo:body": sanitizeDkgMemoryText(nextPromptStrategy),
+    ...(latest ? { "demo:fromAttempt": { "@id": latestAttemptId } } : {})
+  };
+
   return {
     "@context": demoContext,
     "@id": `demo:improvement-memory/${sessionId}/${targetRef}`,
@@ -722,11 +840,11 @@ function buildImprovementMemory(
     "demo:currentBestAttempt": bestAttempt
       ? `demo:attempt/${sessionId}/${targetRef}/${bestAttempt.attemptNumber}`
       : undefined,
-    "demo:knownFailure": latest && latest.score < target.targetScore ? [latestObservation] : [],
-    "demo:successfulPattern": successful,
-    "demo:nextPromptStrategy": latest
-      ? sanitizeDkgMemoryText(`Improve the next prompt using this blind-judge observation: ${latestObservation}`)
-      : "Run the first attempt from the target brief, then judge it before creating improvement memory.",
+    "demo:knownFailure": knownFailure,
+    "demo:successfulPattern": successfulPatterns,
+    "demo:nextPromptStrategy": strategy["demo:body"],
+    "demo:hasObservation": observationNodes,
+    "demo:hasStrategy": strategy,
     "demo:latestScore": latest?.score ?? 0,
     "demo:updatedAt": updatedAt
   };

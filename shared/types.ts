@@ -23,6 +23,33 @@ export interface TargetSpec {
   avoid: string[];
   targetScore: number;
 }
+export type KnowledgeObservationCategory = "success" | "failure" | "constraint" | "style";
+export type KnowledgeRelation = "supports" | "needs-improvement" | "violates" | "refines";
+
+export interface KnowledgeObservation {
+  category: KnowledgeObservationCategory;
+  relation: KnowledgeRelation;
+  body: string;
+  criterionIndex?: number;
+}
+
+export interface MemoryObservationNode {
+  "@id": string;
+  "@type": "demo:MemoryObservation";
+  "demo:category": KnowledgeObservationCategory;
+  "demo:relation": KnowledgeRelation;
+  "demo:body": string;
+  "demo:fromAttempt": { "@id": string };
+  "demo:criterionIndex"?: number;
+}
+
+export interface PromptStrategyNode {
+  "@id": string;
+  "@type": "demo:PromptStrategy";
+  "demo:body": string;
+  "demo:fromAttempt"?: { "@id": string };
+}
+
 
 export type AttemptJobStatus = "generating" | "judging" | "sharing" | "completed" | "failed";
 export type AttemptJobPhase = "memory" | "generation" | "judging" | "dkg" | "complete";
@@ -45,8 +72,13 @@ export interface AttemptRecord {
   attemptNumber: number;
   promptSummary: string;
   promptHash: string;
+  promptText: string;
+  promptTextVerified: boolean;
+  userDirectionApplied: boolean;
   memoryUsed: string[];
   promptPreview?: string;
+  knowledgeObservations: KnowledgeObservation[];
+  nextPromptStrategy: string;
   usedDkgMemory: boolean;
   mediaType: MediaType;
   generationCapability: string;
@@ -80,6 +112,8 @@ export interface ImprovementMemoryKa {
   "demo:successfulPattern": string[];
   "demo:nextPromptStrategy": string;
   "demo:latestScore": number;
+  "demo:hasObservation": MemoryObservationNode[];
+  "demo:hasStrategy": PromptStrategyNode;
   "demo:updatedAt": string;
 }
 
@@ -161,6 +195,7 @@ export interface CreateProjectRequest {
 export interface RunAttemptRequest {
   projectId?: string;
   useDkgMemory: boolean;
+  userDirection?: string;
 }
 
 export interface RunAttemptResponse {

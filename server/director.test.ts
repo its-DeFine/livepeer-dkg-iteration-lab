@@ -91,7 +91,11 @@ describe("Director workspace", () => {
       avoid: ["secret-label-8822"],
       targetScore: 8
     });
-    const result = await director.runAttempt({ projectId: created.activeProjectId, useDkgMemory: false });
+    const result = await director.runAttempt({
+      projectId: created.activeProjectId,
+      useDkgMemory: false,
+      userDirection: "Keep private-directive-4711 in the final prompt only."
+    });
     const snapshot = result.state.iterationSnapshots[0];
     const shared = JSON.stringify({
       runLedger: snapshot.runLedger,
@@ -101,12 +105,24 @@ describe("Director workspace", () => {
     });
 
     expect(result.attempt.promptHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.attempt.promptText).toContain("private-directive-4711");
+    expect(result.attempt.promptTextVerified).toBe(true);
+    expect(result.attempt.userDirectionApplied).toBe(true);
+    expect(result.attempt.knowledgeObservations.length).toBeGreaterThan(0);
+    expect(result.state.improvementMemory["demo:hasObservation"].length).toBeGreaterThan(0);
     expect(Object.hasOwn(result.attempt, "promptPreview")).toBe(false);
     expect(shared).not.toContain("owner@example.com");
     expect(shared).not.toContain("privatevalue");
     expect(shared).not.toContain("confidential-title-4711");
     expect(shared).not.toContain("secret-label-8822");
     expect(shared).not.toContain("promptPreview");
+    expect(shared).not.toContain("private-directive-4711");
+    expect(shared).not.toContain("promptText");
+    expect(snapshot.runLedgerRdf).toContain("il:generatedArtifact");
+    expect(snapshot.runLedgerRdf).toContain("il:hasEvaluation");
+    expect(snapshot.improvementMemoryRdf).toContain("il:hasObservation");
+    expect(snapshot.improvementMemoryRdf).toContain("il:hasStrategy");
+    expect(snapshot.improvementMemoryRdf).toContain("il:relation");
     expect(shared).not.toContain("promptSummary");
   });
 

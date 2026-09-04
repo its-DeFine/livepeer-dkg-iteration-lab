@@ -43,7 +43,8 @@ app.post("/api/projects/:projectId/attempts", async (request, response, next) =>
   try {
     response.json(await director.runAttempt({
       projectId: request.params.projectId,
-      useDkgMemory: Boolean(request.body?.useDkgMemory)
+      useDkgMemory: Boolean(request.body?.useDkgMemory),
+      userDirection: request.body?.userDirection
     }));
   } catch (error) {
     next(error);

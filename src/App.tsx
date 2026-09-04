@@ -11,6 +11,7 @@ import {
   Layers3,
   LoaderCircle,
   Music2,
+  Network,
   Plus,
   ShieldCheck,
   Sparkles,
@@ -31,7 +32,7 @@ import type {
 } from "../shared/types";
 import "./styles.css";
 
-type AssetTab = "ledger" | "memory" | "changes";
+type AssetTab = "graph" | "ledger" | "memory" | "changes";
 type DataView = "visual" | "jsonld" | "rdf";
 
 const emptyForm: CreateProjectRequest = {
@@ -48,13 +49,14 @@ export function App() {
   const [workspace, setWorkspace] = useState<WorkspaceState | null>(null);
   const [config, setConfig] = useState<ConfigStatus | null>(null);
   const [selectedTry, setSelectedTry] = useState(0);
-  const [assetTab, setAssetTab] = useState<AssetTab>("ledger");
+  const [assetTab, setAssetTab] = useState<AssetTab>("graph");
   const [dataView, setDataView] = useState<DataView>("visual");
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState<CreateProjectRequest>(emptyForm);
   const [busy, setBusy] = useState<"baseline" | "memory" | "create" | null>(null);
   const [error, setError] = useState("");
   const [pendingProjectId, setPendingProjectId] = useState<string | null>(null);
+  const [userDirection, setUserDirection] = useState("");
 
   useEffect(() => {
     void Promise.all([getJson<WorkspaceState>("/api/state"), getJson<ConfigStatus>("/api/config")])
@@ -94,6 +96,10 @@ export function App() {
     if (project) setSelectedTry(Math.max(0, project.attempts.length - 1));
   }, [project?.projectId, project?.attempts.length]);
 
+  useEffect(() => {
+    setUserDirection("");
+  }, [project?.projectId]);
+
   const snapshot = project?.iterationSnapshots[selectedTry] ?? null;
   const attempt = project?.attempts[selectedTry] ?? null;
   const previous = selectedTry > 0 ? project?.iterationSnapshots[selectedTry - 1] ?? null : null;
@@ -120,9 +126,10 @@ export function App() {
     try {
       const result = await postJson<{ workspace: WorkspaceState }>(
         `/api/projects/${encodeURIComponent(projectId)}/attempts`,
-        { useDkgMemory }
+        { useDkgMemory, userDirection }
       );
       setWorkspace(result.workspace);
+      setUserDirection("");
     } catch (cause) {
       setError(messageOf(cause));
       try {
@@ -297,20 +304,54 @@ export function App() {
               <h1>{project.target.title}</h1>
               <p className="brief">{project.target.brief}</p>
             </div>
-            <div className="run-actions">
-              {!project.attempts.length ? (
-                <button className="primary" disabled={isRunning} onClick={() => void runAttempt(false)}>
-                  {busy === "baseline" ? <LoaderCircle className="spin" size={17} /> : <Zap size={17} />}
-                  Generate baseline
-                </button>
-              ) : (
-                <button className="primary" disabled={isRunning} onClick={() => void runAttempt(true)}>
-                  {busy === "memory" ? <LoaderCircle className="spin" size={17} /> : <BrainCircuit size={17} />}
-                  Generate Try {nextAttemptNumber} with DKG memory
-                </button>
-              )}
-            </div>
           </div>
+
+          <section className="try-composer" aria-labelledby="try-composer-title">
+            <div className="composer-topline">
+              <div>
+                <p className="eyebrow">Compose Try {nextAttemptNumber}</p>
+                <h3 id="try-composer-title">Guide the Director</h3>
+              </div>
+              <div className="composition-path" aria-label="Prompt composition path">
+                <span>Target</span>
+                <ArrowRight size={12} />
+                {project.attempts.length > 0 && (
+                  <>
+                    <span className="memory-chip">DKG memory</span>
+                    <ArrowRight size={12} />
+                  </>
+                )}
+                <span className={userDirection.trim() ? "active" : ""}>Your direction</span>
+                <ArrowRight size={12} />
+                <span className="director-chip">Director prompt</span>
+              </div>
+            </div>
+            <label htmlFor="user-direction">Your direction <span>optional</span></label>
+            <textarea
+              id="user-direction"
+              value={userDirection}
+              maxLength={1200}
+              rows={3}
+              disabled={isRunning}
+              placeholder="Add a specific creative choice, correction, or constraint for this Try..."
+              onChange={(event) => setUserDirection(event.target.value)}
+            />
+            <div className="composer-footer">
+              <small>The Director combines this with the target and sanitized graph observations. Your text is not copied into shared DKG assets or shown to the blind judge.</small>
+              <button
+                className="primary"
+                disabled={isRunning}
+                onClick={() => void runAttempt(project.attempts.length > 0)}
+              >
+                {isProjectRunning
+                  ? <LoaderCircle className="spin" size={17} />
+                  : project.attempts.length
+                    ? <BrainCircuit size={17} />
+                    : <Zap size={17} />}
+                {isProjectRunning ? "Running..." : `Generate Try ${nextAttemptNumber}`}
+              </button>
+            </div>
+          </section>
 
           {latestFailedJob && !activeJob && (
             <div className="job-failure-notice" role="status">
@@ -329,11 +370,7 @@ export function App() {
               <div className="empty-artifact">
                 <span><MediaGlyph type={project.target.mediaType} /></span>
                 <h3>Turn this brief into the first artifact</h3>
-                <p>The Director will call Livepeer remotely, ask a blind judge to evaluate the output, then record both DKG assets.</p>
-                <button className="primary" disabled={isRunning} onClick={() => void runAttempt(false)}>
-                  {busy === "baseline" ? <LoaderCircle className="spin" size={17} /> : <Sparkles size={17} />}
-                  Generate Try 1
-                </button>
+                <p>Add an optional direction above, then let the Director compose and run the complete prompt.</p>
               </div>
             )}
             {isProjectRunning && (
@@ -366,25 +403,36 @@ export function App() {
           {attempt && (
             <div className="prompt-trace-card">
               <div className="prompt-trace-heading">
-                <span><BrainCircuit size={15} /> Director input for Try {attempt.attemptNumber}</span>
-                <code>{attempt.promptHash.slice(0, 12)}</code>
+                <span><BrainCircuit size={15} /> Director prompt for Try {attempt.attemptNumber}</span>
+                <span className={`prompt-integrity ${attempt.promptTextVerified ? "verified" : "recovered"}`}>
+                  {attempt.promptTextVerified ? "Fingerprint verified" : "Historical reconstruction"}
+                </span>
               </div>
-              {attempt.usedDkgMemory ? (
-                <>
-                  <p>The Director composed a new prompt from the target plus these sanitized DKG observations:</p>
+              <div className="prompt-provenance">
+                <span>Target</span>
+                {attempt.usedDkgMemory && <span>+ {attempt.memoryUsed.length} DKG observations</span>}
+                {attempt.userDirectionApplied && <span>+ Your direction</span>}
+                <ArrowRight size={13} />
+                <strong>Final generation prompt</strong>
+              </div>
+              <pre className="prompt-text">{attempt.promptText}</pre>
+              <div className="prompt-trace-meta">
+                <code>{attempt.promptHash}</code>
+                <small>
+                  {attempt.promptTextVerified
+                    ? "This private prompt matches the fingerprint stored with the run."
+                    : "This older run predates private prompt storage; the displayed reconstruction does not match its historical fingerprint."}
+                  {" "}Only the fingerprint, structured evidence, and relationships are shared to DKG.
+                </small>
+              </div>
+              {attempt.usedDkgMemory && (
+                <details className="memory-used">
+                  <summary>View the sanitized graph observations used</summary>
                   <ul>{attempt.memoryUsed.map((item) => <li key={item}>{item}</li>)}</ul>
-                  <small>The previous full prompt was not read from DKG or resent. The fingerprint proves which newly composed prompt produced this artifact.</small>
-                </>
-              ) : selectedAttemptJob?.useDkgMemory ? (
-                <>
-                  <p>DKG memory was requested, but the node returned no reusable observations. This prompt was composed from the target only.</p>
-                  <small>The prompt fingerprint and zero-observation record keep that provenance explicit.</small>
-                </>
-              ) : (
-                <>
-                  <p>Target brief and criteria only. No DKG improvement memory was read for this baseline.</p>
-                  <small>The fingerprint identifies the composed prompt without exposing its text in the shared knowledge assets.</small>
-                </>
+                </details>
+              )}
+              {!attempt.usedDkgMemory && selectedAttemptJob?.useDkgMemory && (
+                <p className="memory-warning">DKG memory was requested, but no reusable observation was returned for this Try.</p>
               )}
             </div>
           )}
@@ -426,6 +474,7 @@ export function App() {
           </div>
 
           <div className="asset-tabs" role="tablist">
+            <button className={assetTab === "graph" ? "active" : ""} onClick={() => setAssetTab("graph")}>Graph</button>
             <button className={assetTab === "ledger" ? "active" : ""} onClick={() => setAssetTab("ledger")}>Run Ledger</button>
             <button className={assetTab === "memory" ? "active" : ""} onClick={() => setAssetTab("memory")}>Improvement Memory</button>
             <button className={assetTab === "changes" ? "active" : ""} onClick={() => setAssetTab("changes")}>Changes</button>
@@ -433,7 +482,7 @@ export function App() {
 
           {snapshot ? (
             <div className="inspector-body">
-              {assetTab !== "changes" && (
+              {(assetTab === "ledger" || assetTab === "memory") && (
                 <div className="view-switch">
                   {(["visual", "jsonld", "rdf"] as DataView[]).map((view) => (
                     <button key={view} className={dataView === view ? "active" : ""} onClick={() => setDataView(view)}>
@@ -442,6 +491,7 @@ export function App() {
                   ))}
                 </div>
               )}
+              {assetTab === "graph" && <KnowledgeGraphVisual snapshot={snapshot} />}
               {assetTab === "ledger" && (
                 <AssetView
                   view={dataView}
@@ -642,6 +692,140 @@ function MemoryVisual({ memory }: { memory: ImprovementMemoryKa }) {
     </div>
   );
 }
+function KnowledgeGraphVisual({ snapshot }: { snapshot: IterationSnapshot }) {
+  const runs = snapshot.runLedger["demo:hasAttempt"];
+  const observations = snapshot.improvementMemory["demo:hasObservation"];
+  const strategy = snapshot.improvementMemory["demo:hasStrategy"];
+
+  return (
+    <div className="kg-visual">
+      <div className="kg-heading">
+        <span><Network size={15} /> RDF relationship map</span>
+        <small>{runs.length} runs - {observations.length} observations</small>
+      </div>
+
+      <GraphNode tone="target" kicker="Entity" title="Target" meta={shortId(snapshot.runLedger["demo:targetId"])} />
+      <GraphEdge label="is tracked by" />
+      <GraphNode tone="ledger" kicker="Knowledge Asset" title="Run Ledger" meta={shortId(snapshot.runLedger["@id"])} />
+
+      {runs.map((run, index) => {
+        const artifact = (run["demo:generatedArtifact"] ?? {}) as Record<string, unknown>;
+        const evaluation = (run["demo:hasEvaluation"] ?? {}) as Record<string, unknown>;
+        const memoryInputs = Array.isArray(run["demo:usedMemoryObservation"])
+          ? run["demo:usedMemoryObservation"] as Array<Record<string, unknown>>
+          : [];
+        return (
+          <section className="kg-run" key={String(run["@id"] ?? index)}>
+            <GraphEdge label="hasAttempt" />
+            <GraphNode
+              tone="run"
+              kicker="GenerationAttempt"
+              title={`Try ${String(run["demo:attemptNumber"])}`}
+              meta={`${String(run["demo:mediaType"])} - prompt ${String(run["demo:promptHash"]).slice(0, 9)}`}
+            />
+            <div className="kg-branches">
+              <div>
+                <GraphEdge label="generatedArtifact" compact />
+                <GraphNode
+                  tone="artifact"
+                  kicker="MediaArtifact"
+                  title="Output"
+                  meta={shortId(String(artifact["@id"] ?? ""))}
+                  compact
+                />
+              </div>
+              <div>
+                <GraphEdge label="hasEvaluation" compact />
+                <GraphNode
+                  tone="evaluation"
+                  kicker="BlindEvaluation"
+                  title={`${String(evaluation["demo:score"] ?? run["demo:score"])}/10`}
+                  meta={String(evaluation["demo:pass"] ?? run["demo:pass"]) === "true" ? "target reached" : "iterate"}
+                  compact
+                />
+              </div>
+            </div>
+            {memoryInputs.length > 0 && (
+              <div className="kg-memory-link">
+                <GraphEdge label={`usedMemoryObservation x${memoryInputs.length}`} compact />
+                <span>Only content fingerprints cross this run link.</span>
+              </div>
+            )}
+          </section>
+        );
+      })}
+
+      <GraphEdge label="updates" />
+      <GraphNode
+        tone="memory"
+        kicker="Knowledge Asset"
+        title="Improvement Memory"
+        meta={shortId(snapshot.improvementMemory["@id"])}
+      />
+
+      <div className="kg-observations">
+        {observations.map((observation, index) => {
+          const from = observation["demo:fromAttempt"]["@id"].split("/").at(-1) ?? "?";
+          return (
+            <div key={observation["@id"]}>
+              <GraphEdge label="hasObservation" compact />
+              <GraphNode
+                tone="observation"
+                kicker={`MemoryObservation - ${observation["demo:category"]}`}
+                title={observation["demo:body"]}
+                meta={`fromAttempt Try ${from} - ${observation["demo:relation"]}${observation["demo:criterionIndex"] !== undefined ? ` - criterion ${observation["demo:criterionIndex"] + 1}` : ""}`}
+                compact
+              />
+            </div>
+          );
+        })}
+      </div>
+
+      <GraphEdge label="hasStrategy" compact />
+      <GraphNode
+        tone="strategy"
+        kicker="PromptStrategy"
+        title={strategy["demo:body"]}
+        meta={strategy["demo:fromAttempt"] ? `fromAttempt Try ${strategy["demo:fromAttempt"]["@id"].split("/").at(-1)}` : "initial strategy"}
+        compact
+      />
+      <p className="kg-privacy"><ShieldCheck size={13} /> RDF contains typed relationships and sanitized evidence. Full prompts remain in private run state.</p>
+    </div>
+  );
+}
+
+function GraphNode({
+  tone,
+  kicker,
+  title,
+  meta,
+  compact = false
+}: {
+  tone: string;
+  kicker: string;
+  title: string;
+  meta: string;
+  compact?: boolean;
+}) {
+  return (
+    <div className={`graph-node ${tone} ${compact ? "compact" : ""}`}>
+      <span>{kicker}</span>
+      <strong>{title}</strong>
+      <small>{meta}</small>
+    </div>
+  );
+}
+
+function GraphEdge({ label, compact = false }: { label: string; compact?: boolean }) {
+  return (
+    <div className={`graph-edge ${compact ? "compact" : ""}`}>
+      <i />
+      <span>{label}</span>
+      <ArrowRight size={11} />
+    </div>
+  );
+}
+
 
 function MemorySection({ title, items, empty, tone }: { title: string; items: string[]; empty: string; tone: string }) {
   return (

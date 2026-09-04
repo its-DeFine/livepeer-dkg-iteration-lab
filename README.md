@@ -74,7 +74,7 @@ Livepeer:
 
 - Set `LIVEPEER_MODE=real`.
 - Set `LIVEPEER_MCP_URL=https://agent.livepeer.org/api/mcp`.
-- The built-in media profiles use `flux-schnell` for images, `flux-3-draft-t2v` for video, and `ltx-25-t2v-fast` for video with native audio. Each can be overridden with the corresponding runtime capability variable.
+- The built-in media profiles use `flux-schnell` for images and `pixverse-t2v` for video. Video with audio uses a remote composition path: `pixverse-t2v` -> `sonilo-v2m` -> `ffmpeg-mux`. Each stage can be overridden with the corresponding runtime capability variable.
 - The app calls the remote Livepeer raw MCP surface. It does not run Livepeer capabilities, models, renderers, or LiveBridge components locally.
 - Keep bearer tokens in the runtime environment, never in Git.
 

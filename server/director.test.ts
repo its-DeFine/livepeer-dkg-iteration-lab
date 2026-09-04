@@ -76,7 +76,9 @@ describe("Director workspace", () => {
     expect(secondProject.receipt.projectId).toBe(secondProject.projectId);
 
     const result = await director.runAttempt({ projectId: secondProject.projectId, useDkgMemory: false });
-    expect(result.attempt.generationCapability).toBe("ltx-25-t2v-fast");
+    expect(result.attempt.generationCapability).toContain("pixverse-t2v");
+    expect(result.attempt.generationCapability).toContain("sonilo-v2m");
+    expect(result.attempt.generationCapability).toContain("ffmpeg-mux");
     expect(result.state.attempts).toHaveLength(1);
     expect(result.workspace.projects.find((project) => project.projectId === firstProject.projectId)?.attempts).toHaveLength(0);
 

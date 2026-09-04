@@ -180,26 +180,19 @@ SELECT DISTINCT ?body WHERE {
     (${targetIri(state)} ${attemptIri(state, latest)})
     (${legacyTargetIri(state)} ${legacyAttemptIri(state, latest)})
   }
-  {
-    ?thing a il:MemoryObservation ;
-      il:forTarget ?target ;
-      il:fromAttempt ?sourceAttempt ;
-      il:category ?category ;
-      il:body ?body .
-    FILTER (
-      ?category = "success" || ?category = "style" ||
+  ?thing a ?kind ;
+    il:forTarget ?target ;
+    il:fromAttempt ?sourceAttempt ;
+    il:body ?body .
+  OPTIONAL { ?thing il:category ?category . }
+  FILTER (
+    (?kind = il:PromptStrategy && ?sourceAttempt = ?latestAttempt) ||
+    (?kind = il:MemoryObservation && (
+      ?category = "success" || ?category = "style" || ?category = "successfulPattern" ||
       (?sourceAttempt = ?latestAttempt &&
-        (?category = "failure" || ?category = "constraint" ||
-          ?category = "knownFailure" || ?category = "successfulPattern"))
-    )
-  }
-  UNION
-  {
-    ?thing a il:PromptStrategy ;
-      il:forTarget ?target ;
-      il:fromAttempt ?latestAttempt ;
-      il:body ?body .
-  }
+        (?category = "failure" || ?category = "constraint" || ?category = "knownFailure"))
+    ))
+  )
 }`;
 
     const output = await this.run(["query", contextGraphId, "--include-shared-memory", "--sparql", query]);

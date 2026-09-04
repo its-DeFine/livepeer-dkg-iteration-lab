@@ -264,6 +264,8 @@ describe("Director workspace", () => {
     expect(query).toContain('?category = "style"');
     expect(query).toContain("?sourceAttempt = ?latestAttempt");
     expect(query).toContain("il:PromptStrategy");
+    expect(query).not.toContain("UNION");
+    expect(query).toContain("OPTIONAL { ?thing il:category ?category . }");
     expect(query).not.toContain(result.attempt.promptText);
     run.mockRestore();
   });

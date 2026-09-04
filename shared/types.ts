@@ -48,6 +48,16 @@ export interface ImprovementMemoryKa {
   "demo:updatedAt": string;
 }
 
+export interface IterationSnapshot {
+  attemptNumber: number;
+  attemptId: string;
+  artifactReference: string;
+  artifactHash?: string;
+  runLedger: RunLedgerKa;
+  improvementMemory: ImprovementMemoryKa;
+  capturedAt: string;
+}
+
 export interface SubmissionReceipt {
   targetId: string;
   exportedAt: string;
@@ -66,6 +76,7 @@ export interface DemoState {
   attempts: AttemptRecord[];
   runLedger: RunLedgerKa;
   improvementMemory: ImprovementMemoryKa;
+  iterationSnapshots: IterationSnapshot[];
   receipt: SubmissionReceipt;
   updatedAt: string;
 }

@@ -25,6 +25,11 @@ describe("Director improvement loop", () => {
     expect(second.state.sessionId).toContain("session-");
     expect(second.state.runLedger["demo:hasAttempt"]).toHaveLength(2);
     expect(second.state.improvementMemory["demo:latestScore"]).toBe(second.attempt.score);
+    expect(second.state.iterationSnapshots).toHaveLength(2);
+    expect(second.state.iterationSnapshots[0].runLedger["demo:hasAttempt"]).toHaveLength(1);
+    expect(second.state.iterationSnapshots[1].runLedger["demo:hasAttempt"]).toHaveLength(2);
+    expect(second.state.iterationSnapshots[0].improvementMemory["demo:latestScore"]).toBe(first.attempt.score);
+    expect(second.state.iterationSnapshots[1].artifactReference).toBe(second.attempt.outputReference);
 
     const ledger = await readFile(path.join(dataDir, "run-ledger-ka.jsonld"), "utf8");
     expect(ledger).toContain("demo:RunLedger");

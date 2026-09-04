@@ -4,6 +4,7 @@ import type {
   ConfigStatus,
   DemoState,
   ImprovementMemoryKa,
+  IterationSnapshot,
   RunAttemptRequest,
   RunAttemptResponse,
   RunLedgerKa,
@@ -29,8 +30,13 @@ export function createDirector(dataDir: string) {
   async function getState(): Promise<DemoState> {
     const existing = await store.read();
     if (existing) {
-      if (!existing.sessionId) {
-        const migrated = { ...existing, sessionId: createSessionId() };
+      const sessionId = existing.sessionId || createSessionId();
+      if (!existing.sessionId || !Array.isArray(existing.iterationSnapshots)) {
+        const migrated: DemoState = {
+          ...existing,
+          sessionId,
+          iterationSnapshots: buildIterationSnapshots(sessionId, existing.target, existing.attempts)
+        };
         await writeLocalState(migrated);
         return migrated;
       }
@@ -81,7 +87,18 @@ export function createDirector(dataDir: string) {
 
     const attempts = attemptNumber === 1 ? [attempt] : [...current.attempts, attempt];
     const runLedger = buildRunLedger(current.sessionId, target, attempts);
-    const improvementMemory = buildImprovementMemory(current.sessionId, target, attempts);
+    const improvementMemory = buildImprovementMemory(current.sessionId, target, attempts, attempt.createdAt);
+    const iterationSnapshot: IterationSnapshot = {
+      attemptNumber,
+      attemptId: attempt.id,
+      artifactReference: attempt.outputReference,
+      artifactHash: attempt.outputHash,
+      runLedger,
+      improvementMemory,
+      capturedAt: attempt.createdAt
+    };
+    const iterationSnapshots =
+      attemptNumber === 1 ? [iterationSnapshot] : [...current.iterationSnapshots, iterationSnapshot];
     const receipt = buildReceipt(target, attempts, runLedger, improvementMemory);
     const nextState: DemoState = {
       sessionId: current.sessionId,
@@ -89,6 +106,7 @@ export function createDirector(dataDir: string) {
       attempts,
       runLedger,
       improvementMemory,
+      iterationSnapshots,
       receipt,
       updatedAt: new Date().toISOString()
     };
@@ -167,6 +185,7 @@ function createInitialState(target: TargetSpec): DemoState {
     attempts,
     runLedger,
     improvementMemory,
+    iterationSnapshots: [],
     receipt,
     updatedAt: new Date().toISOString()
   };
@@ -214,7 +233,12 @@ function buildRunLedger(sessionId: string, target: TargetSpec, attempts: Attempt
   };
 }
 
-function buildImprovementMemory(sessionId: string, target: TargetSpec, attempts: AttemptRecord[]): ImprovementMemoryKa {
+function buildImprovementMemory(
+  sessionId: string,
+  target: TargetSpec,
+  attempts: AttemptRecord[],
+  updatedAt = new Date().toISOString()
+): ImprovementMemoryKa {
   const bestAttempt = attempts.reduce<AttemptRecord | undefined>(
     (best, attempt) => (!best || attempt.score > best.score ? attempt : best),
     undefined
@@ -238,8 +262,27 @@ function buildImprovementMemory(sessionId: string, target: TargetSpec, attempts:
       ? "Make the product visible in the first and final frames, keep the cinematic tone, and ask for a clean final composition."
       : "Run the first attempt from the target brief, then judge it before creating improvement memory.",
     "demo:latestScore": latest?.score ?? 0,
-    "demo:updatedAt": new Date().toISOString()
+    "demo:updatedAt": updatedAt
   };
+}
+
+function buildIterationSnapshots(
+  sessionId: string,
+  target: TargetSpec,
+  attempts: AttemptRecord[]
+): IterationSnapshot[] {
+  return attempts.map((attempt, index) => {
+    const attemptsAtIteration = attempts.slice(0, index + 1);
+    return {
+      attemptNumber: attempt.attemptNumber,
+      attemptId: attempt.id,
+      artifactReference: attempt.outputReference,
+      artifactHash: attempt.outputHash,
+      runLedger: buildRunLedger(sessionId, target, attemptsAtIteration),
+      improvementMemory: buildImprovementMemory(sessionId, target, attemptsAtIteration, attempt.createdAt),
+      capturedAt: attempt.createdAt
+    };
+  });
 }
 
 function buildReceipt(

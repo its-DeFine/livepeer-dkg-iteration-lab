@@ -6,6 +6,8 @@ import {
   Download,
   ExternalLink,
   GitBranch,
+  History,
+  Layers3,
   Loader2,
   Network,
   Play,
@@ -17,7 +19,14 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import type { AttemptRecord, ConfigStatus, DemoState, RunAttemptResponse } from "../shared/types";
+import type {
+  AttemptRecord,
+  ConfigStatus,
+  DemoState,
+  ImprovementMemoryKa,
+  RunAttemptResponse,
+  RunLedgerKa
+} from "../shared/types";
 
 const stageCards = [
   {
@@ -52,6 +61,7 @@ export function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [memoryUsed, setMemoryUsed] = useState<string[]>([]);
+  const [selectedIteration, setSelectedIteration] = useState<number | "current">("current");
 
   useEffect(() => {
     void loadInitialState();
@@ -80,6 +90,7 @@ export function App() {
       const payload = (await response.json()) as RunAttemptResponse;
       setState(payload.state);
       setMemoryUsed(payload.memoryUsed);
+      setSelectedIteration("current");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Attempt failed.");
     } finally {
@@ -94,6 +105,7 @@ export function App() {
       const response = await fetch("/api/reset", { method: "POST" });
       setState(await response.json());
       setMemoryUsed([]);
+      setSelectedIteration("current");
     } finally {
       setLoading(false);
     }
@@ -106,7 +118,28 @@ export function App() {
     return state.attempts.reduce((best, attempt) => (attempt.score > best.score ? attempt : best), state.attempts[0]);
   }, [state]);
 
-  const latestAttempt = state?.attempts.at(-1) ?? null;
+  const iterationView = useMemo(() => {
+    if (!state || selectedIteration === "current") {
+      return state
+        ? {
+            label: "Current state",
+            attempt: state.attempts.at(-1) ?? null,
+            runLedger: state.runLedger,
+            improvementMemory: state.improvementMemory
+          }
+        : null;
+    }
+
+    const snapshot = state.iterationSnapshots.find((item) => item.attemptNumber === selectedIteration);
+    return snapshot
+      ? {
+          label: `After Try ${snapshot.attemptNumber}`,
+          attempt: state.attempts.find((item) => item.id === snapshot.attemptId) ?? null,
+          runLedger: snapshot.runLedger,
+          improvementMemory: snapshot.improvementMemory
+        }
+      : null;
+  }, [selectedIteration, state]);
 
   if (!state) {
     return (
@@ -193,8 +226,43 @@ export function App() {
           <ScoreStrip attempts={state.attempts} targetScore={state.target.targetScore} />
         </Panel>
 
-        <Panel className="output-panel" icon={<Sparkles size={18} />} title="Latest Livepeer output">
-          {latestAttempt ? <OutputPreview attempt={latestAttempt} /> : <EmptyPreview />}
+        <Panel className="history-panel" icon={<History size={18} />} title="Artifact + knowledge asset history">
+          <div className="history-heading">
+            <p>
+              The same two knowledge assets evolve after every run. Select an iteration to inspect its artifact and
+              the exact JSON-LD state captured when that run finished.
+            </p>
+            <div className="iteration-tabs" role="tablist" aria-label="Choose an iteration">
+              <button
+                className={selectedIteration === "current" ? "iteration-tab active" : "iteration-tab"}
+                onClick={() => setSelectedIteration("current")}
+                role="tab"
+                aria-selected={selectedIteration === "current"}
+              >
+                Current
+              </button>
+              {state.iterationSnapshots.map((snapshot) => (
+                <button
+                  className={selectedIteration === snapshot.attemptNumber ? "iteration-tab active" : "iteration-tab"}
+                  key={snapshot.attemptNumber}
+                  onClick={() => setSelectedIteration(snapshot.attemptNumber)}
+                  role="tab"
+                  aria-selected={selectedIteration === snapshot.attemptNumber}
+                >
+                  Try {snapshot.attemptNumber}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {iterationView ? (
+            <IterationInspector
+              label={iterationView.label}
+              attempt={iterationView.attempt}
+              runLedger={iterationView.runLedger}
+              improvementMemory={iterationView.improvementMemory}
+            />
+          ) : null}
         </Panel>
 
         <Panel icon={<Archive size={18} />} title="Run ledger">
@@ -204,25 +272,6 @@ export function App() {
             ) : (
               state.attempts.map((attempt) => <AttemptRow key={attempt.id} attempt={attempt} />)
             )}
-          </div>
-        </Panel>
-
-        <Panel icon={<Database size={18} />} title="DKG knowledge assets">
-          <div className="asset-grid">
-            <AssetCard
-              title="Run Ledger KA"
-              value={shortReference(state.receipt.runLedgerReference)}
-              lines={[`${state.attempts.length} attempt records`, bestAttempt ? `Best score ${bestAttempt.score}/10` : "Waiting for first run"]}
-            />
-            <AssetCard
-              title="Improvement Memory KA"
-              value={shortReference(state.receipt.improvementMemoryReference)}
-              lines={[
-                ...state.improvementMemory["demo:knownFailure"],
-                ...state.improvementMemory["demo:successfulPattern"],
-                state.improvementMemory["demo:nextPromptStrategy"]
-              ]}
-            />
           </div>
         </Panel>
 
@@ -314,6 +363,81 @@ function ScoreStrip({ attempts, targetScore }: { attempts: AttemptRecord[]; targ
   );
 }
 
+function IterationInspector({
+  label,
+  attempt,
+  runLedger,
+  improvementMemory
+}: {
+  label: string;
+  attempt: AttemptRecord | null;
+  runLedger: RunLedgerKa;
+  improvementMemory: ImprovementMemoryKa;
+}) {
+  return (
+    <div className="iteration-inspector">
+      <section className="artifact-card">
+        <div className="snapshot-title">
+          <span>Produced artifact</span>
+          <b>{label}</b>
+        </div>
+        {attempt ? <OutputPreview attempt={attempt} /> : <EmptyPreview />}
+      </section>
+      <KnowledgeAssetSnapshot icon={<Archive size={17} />} title="Run Ledger KA" label={label} asset={runLedger}>
+        <p className="asset-stat">{runLedger["demo:hasAttempt"].length} recorded attempts</p>
+        <ol className="snapshot-attempts">
+          {runLedger["demo:hasAttempt"].map((item, index) => (
+            <li key={String(item["@id"] ?? index)}>
+              <span>Try {String(item["demo:attemptNumber"] ?? index + 1)}</span>
+              <strong>{String(item["demo:score"] ?? 0)}/10</strong>
+            </li>
+          ))}
+        </ol>
+      </KnowledgeAssetSnapshot>
+      <KnowledgeAssetSnapshot
+        icon={<Brain size={17} />}
+        title="Improvement Memory KA"
+        label={label}
+        asset={improvementMemory}
+      >
+        <p className="asset-stat">Latest score {improvementMemory["demo:latestScore"]}/10</p>
+        <AssetSection title="Known failures" lines={improvementMemory["demo:knownFailure"]} />
+        <AssetSection title="Successful patterns" lines={improvementMemory["demo:successfulPattern"]} />
+        <AssetSection title="Next prompt strategy" lines={[improvementMemory["demo:nextPromptStrategy"]]} />
+      </KnowledgeAssetSnapshot>
+    </div>
+  );
+}
+
+function KnowledgeAssetSnapshot({
+  icon,
+  title,
+  label,
+  asset,
+  children
+}: {
+  icon: ReactNode;
+  title: string;
+  label: string;
+  asset: RunLedgerKa | ImprovementMemoryKa;
+  children: ReactNode;
+}) {
+  return (
+    <section className="snapshot-card">
+      <div className="snapshot-title">
+        <span>{icon}{title}</span>
+        <b>{label}</b>
+      </div>
+      <code>{shortReference(asset["@id"])}</code>
+      <div className="snapshot-content">{children}</div>
+      <details className="json-details">
+        <summary><Layers3 size={15} /> View JSON-LD snapshot</summary>
+        <pre>{JSON.stringify(asset, null, 2)}</pre>
+      </details>
+    </section>
+  );
+}
+
 function OutputPreview({ attempt }: { attempt: AttemptRecord }) {
   const previewable = attempt.outputReference.startsWith("http");
   return (
@@ -368,21 +492,23 @@ function AttemptRow({ attempt }: { attempt: AttemptRecord }) {
   );
 }
 
-function AssetCard({ title, value, lines }: { title: string; value: string; lines: string[] }) {
+function AssetSection({ title, lines }: { title: string; lines: string[] }) {
+  const visibleLines = lines.filter(Boolean);
   return (
-    <div className="asset-card">
+    <div className="asset-section">
       <strong>{title}</strong>
-      <code>{value}</code>
-      <ul>
-        {lines.filter(Boolean).map((line) => (
-          <li key={line}>{line}</li>
-        ))}
-      </ul>
+      {visibleLines.length ? (
+        <ul>
+          {visibleLines.map((line) => <li key={line}>{line}</li>)}
+        </ul>
+      ) : (
+        <span>None yet</span>
+      )}
     </div>
   );
 }
 
 function shortReference(value: string): string {
-  const last = value.split("/").filter(Boolean).at(-1) ?? value;
-  return last.length > 48 ? `${last.slice(0, 45)}...` : last;
+  const concise = value.split("/").filter(Boolean).slice(-3).join(" / ") || value;
+  return concise.length > 68 ? `${concise.slice(0, 65)}...` : concise;
 }

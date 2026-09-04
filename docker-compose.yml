@@ -1,0 +1,14 @@
+services:
+  livepeer-dkg-iteration-lab:
+    build: .
+    container_name: livepeer-dkg-iteration-lab
+    ports:
+      - "8787:8080"
+    env_file:
+      - .env
+    volumes:
+      - iteration-lab-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  iteration-lab-data:

@@ -1,0 +1,20 @@
+{
+  "@context": {
+    "demo": "https://atumera.example/livepeer-dkg#",
+    "schema": "https://schema.org/"
+  },
+  "@id": "demo:run-ledger/signal-brew-launch",
+  "@type": "demo:RunLedger",
+  "demo:targetId": "signal-brew-launch",
+  "demo:hasAttempt": [
+    {
+      "@id": "demo:attempt/signal-brew-launch/1",
+      "@type": "demo:GenerationAttempt",
+      "demo:attemptNumber": 1,
+      "demo:promptSummary": "Initial cinematic product launch prompt",
+      "demo:outputReference": "https://example.invalid/livepeer-output/signal-brew-launch/attempt-1",
+      "demo:score": 3,
+      "demo:judgeOutputSummary": "Output is atmospheric but does not show the product clearly."
+    }
+  ]
+}

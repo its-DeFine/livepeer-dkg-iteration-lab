@@ -1,0 +1,31 @@
+{
+  "name": "livepeer-dkg-iteration-lab",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Starter app showing a Livepeer Agent improvement loop with DKG-backed run evidence and improvement memory.",
+  "scripts": {
+    "dev": "tsx server/index.ts",
+    "build": "vite build && tsc -p tsconfig.server.json",
+    "start": "node dist/server/index.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "lucide-react": "^0.542.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.3.1",
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.4",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.4",
+    "vitest": "^3.2.4"
+  }
+}

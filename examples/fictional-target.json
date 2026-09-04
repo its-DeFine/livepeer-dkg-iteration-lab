@@ -1,0 +1,18 @@
+{
+  "id": "signal-brew-launch",
+  "title": "Signal Brew Launch Video",
+  "brief": "Create a 10-second launch video for a fictional product called Signal Brew. It should feel precise, optimistic, and cinematic. The product should be visible and the ending frame should feel clean.",
+  "successCriteria": [
+    "The product is visible in the opening or final frame.",
+    "The tone feels optimistic and cinematic.",
+    "The output avoids dark dystopian visuals.",
+    "The final frame is clean enough to use as a thumbnail."
+  ],
+  "avoid": [
+    "real customer data",
+    "dystopian language",
+    "unreadable text",
+    "private brands"
+  ],
+  "targetScore": 8
+}

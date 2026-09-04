@@ -1,0 +1,20 @@
+{
+  "@context": {
+    "demo": "https://atumera.example/livepeer-dkg#",
+    "schema": "https://schema.org/"
+  },
+  "@id": "demo:improvement-memory/signal-brew-launch",
+  "@type": "demo:ImprovementMemory",
+  "demo:targetId": "signal-brew-launch",
+  "demo:currentBestAttempt": "demo:attempt/signal-brew-launch/1",
+  "demo:knownFailure": [
+    "Product visibility needs to be explicit.",
+    "The ending frame needs a cleaner composition."
+  ],
+  "demo:successfulPattern": [
+    "Cinematic lighting fits the target tone."
+  ],
+  "demo:nextPromptStrategy": "Make the product visible in the first and final frames, keep cinematic lighting, and ask for a clean final composition.",
+  "demo:latestScore": 3,
+  "demo:updatedAt": "2026-09-04T00:00:00.000Z"
+}

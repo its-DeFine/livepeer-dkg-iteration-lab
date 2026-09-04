@@ -1,0 +1,13 @@
+{
+  "targetId": "signal-brew-launch",
+  "exportedAt": "2026-09-04T00:00:00.000Z",
+  "bestAttemptId": "signal-brew-launch-attempt-1",
+  "bestScore": 3,
+  "attemptCount": 1,
+  "outputReferences": [
+    "https://example.invalid/livepeer-output/signal-brew-launch/attempt-1"
+  ],
+  "runLedgerReference": "demo:run-ledger/signal-brew-launch",
+  "improvementMemoryReference": "demo:improvement-memory/signal-brew-launch",
+  "safetyNote": "This receipt stores references, summaries, scores, and reviewable evaluation output. It does not include secrets, private keys, local paths, or raw private media."
+}

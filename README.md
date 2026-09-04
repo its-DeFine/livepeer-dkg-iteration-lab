@@ -73,8 +73,10 @@ Livepeer:
 DKG:
 
 - Use `DKG_MODE=file` for the starter flow.
-- Use the exported JSON-LD files as payloads for DKG Knowledge Asset operations.
-- For a real DKG CLI flow, create a Context Graph, write the JSON-LD/RDF payloads as Knowledge Assets, share to Shared Working Memory, and optionally publish a final receipt to Verifiable Memory on testnet.
+- Use `DKG_MODE=cli` when the DKG CLI is installed in the runtime.
+- Set `DKG_CONTEXT_GRAPH_ID` to an existing Context Graph ID.
+- The CLI adapter writes `run-ledger` and `improvement-memory` Knowledge Assets and shares them to Shared Working Memory.
+- Publish a final receipt to Verifiable Memory only when testnet/mainnet wallet setup is ready.
 
 ## DKG CLI Shape
 

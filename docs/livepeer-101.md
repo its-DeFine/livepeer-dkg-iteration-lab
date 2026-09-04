@@ -2,7 +2,7 @@
 
 Livepeer is a decentralized compute network for video and real-time AI workloads.
 
-In this starter app, Livepeer Agent is treated as the media execution layer:
+In this demo app, Livepeer Agent is treated as the remote media execution layer:
 
 - Director creates a focused prompt.
 - Livepeer Agent runs the media job.

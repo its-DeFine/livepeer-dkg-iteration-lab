@@ -21,6 +21,7 @@ export interface AttemptRecord {
   score: number;
   pass: boolean;
   judgeOutputSummary: string;
+  judgeReference?: string;
   createdAt: string;
 }
 
@@ -29,6 +30,7 @@ export interface RunLedgerKa {
   "@id": string;
   "@type": "demo:RunLedger";
   "demo:targetId": string;
+  "demo:sessionId": string;
   "demo:hasAttempt": Array<Record<string, unknown>>;
 }
 
@@ -37,6 +39,7 @@ export interface ImprovementMemoryKa {
   "@id": string;
   "@type": "demo:ImprovementMemory";
   "demo:targetId": string;
+  "demo:sessionId": string;
   "demo:currentBestAttempt"?: string;
   "demo:knownFailure": string[];
   "demo:successfulPattern": string[];
@@ -58,6 +61,7 @@ export interface SubmissionReceipt {
 }
 
 export interface DemoState {
+  sessionId: string;
   target: TargetSpec;
   attempts: AttemptRecord[];
   runLedger: RunLedgerKa;
@@ -72,6 +76,7 @@ export interface ConfigStatus {
   judgeMode: RuntimeMode;
   livepeerConfigured: boolean;
   dkgConfigured: boolean;
+  judgeConfigured: boolean;
 }
 
 export interface RunAttemptRequest {

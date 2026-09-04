@@ -4,15 +4,47 @@ import {
   CheckCircle2,
   Database,
   Download,
+  ExternalLink,
   GitBranch,
   Loader2,
+  Network,
   Play,
   RefreshCcw,
+  ShieldCheck,
   Sparkles,
-  Target
+  Target,
+  Workflow
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import type { AttemptRecord, ConfigStatus, DemoState, RunAttemptResponse } from "../shared/types";
+
+const stageCards = [
+  {
+    icon: <Target size={18} />,
+    label: "1. Target",
+    title: "Define the desired output",
+    body: "The Director starts from a product brief, success criteria, and explicit avoid rules."
+  },
+  {
+    icon: <Network size={18} />,
+    label: "2. Livepeer",
+    title: "Generate through remote capability",
+    body: "The app calls Livepeer remotely. No Livepeer capability, renderer, or model runs inside this demo container."
+  },
+  {
+    icon: <ShieldCheck size={18} />,
+    label: "3. Judge",
+    title: "Score the attempt",
+    body: "A remote Livepeer-backed judge returns compact feedback and a score that can be stored as evidence."
+  },
+  {
+    icon: <Database size={18} />,
+    label: "4. DKG",
+    title: "Persist reusable memory",
+    body: "The DKG edge node stores a run ledger and improvement memory so the next attempt can improve."
+  }
+];
 
 export function App() {
   const [state, setState] = useState<DemoState | null>(null);
@@ -74,6 +106,8 @@ export function App() {
     return state.attempts.reduce((best, attempt) => (attempt.score > best.score ? attempt : best), state.attempts[0]);
   }, [state]);
 
+  const latestAttempt = state?.attempts.at(-1) ?? null;
+
   if (!state) {
     return (
       <main className="loading-shell">
@@ -84,21 +118,45 @@ export function App() {
 
   return (
     <main className="app-shell">
-      <section className="topbar">
-        <div>
-          <p className="eyebrow">Livepeer x OriginTrail starter</p>
-          <h1>Livepeer DKG Iteration Lab</h1>
+      <section className="hero">
+        <div className="hero-copy">
+          <p className="eyebrow">Livepeer + OriginTrail workshop app</p>
+          <h1>Agentic media iteration with DKG memory</h1>
+          <p className="hero-subtitle">
+            A Director orchestrates remote Livepeer generation, remote LLM judging, and DKG-backed memory so each
+            attempt leaves useful evidence for the next one.
+          </p>
         </div>
-        <div className="status-row">
-          <StatusPill label="Livepeer" value={config?.livepeerMode ?? "mock"} active={config?.livepeerConfigured} />
-          <StatusPill label="DKG" value={config?.dkgMode ?? "file"} active={config?.dkgConfigured} />
+        <div className="status-row" aria-label="Integration status">
+          <StatusPill label="Livepeer gen" value={config?.livepeerMode ?? "mock"} active={config?.livepeerConfigured} />
+          <StatusPill label="DKG edge" value={config?.dkgMode ?? "file"} active={config?.dkgConfigured} />
+          <StatusPill label="LLM judge" value={config?.judgeMode ?? "mock"} active={config?.judgeConfigured} />
         </div>
       </section>
 
       {error ? <div className="error-banner">{error}</div> : null}
+      {loading ? (
+        <div className="run-banner">
+          <Loader2 className="spin" size={16} />
+          Calling remote Livepeer, evaluating the output, and writing the DKG memory assets.
+        </div>
+      ) : null}
 
-      <section className="grid">
-        <Panel icon={<Target size={18} />} title="Target">
+      <section className="stage-strip" aria-label="Demo flow">
+        {stageCards.map((stage) => (
+          <article className="stage-card" key={stage.label}>
+            <div className="stage-label">
+              {stage.icon}
+              <span>{stage.label}</span>
+            </div>
+            <strong>{stage.title}</strong>
+            <p>{stage.body}</p>
+          </article>
+        ))}
+      </section>
+
+      <section className="showcase-grid">
+        <Panel className="target-panel" icon={<Target size={18} />} title="Target brief">
           <h2>{state.target.title}</h2>
           <p>{state.target.brief}</p>
           <div className="criteria-list">
@@ -106,13 +164,17 @@ export function App() {
               <span key={criterion}>{criterion}</span>
             ))}
           </div>
+          <div className="avoid-list">
+            <strong>Avoid</strong>
+            <span>{state.target.avoid.join(" · ")}</span>
+          </div>
         </Panel>
 
-        <Panel icon={<Sparkles size={18} />} title="Run">
+        <Panel className="control-panel" icon={<Sparkles size={18} />} title="Run the loop">
           <div className="button-row">
             <button onClick={() => runAttempt(false)} disabled={loading} title="Run the first attempt without DKG memory">
               {loading ? <Loader2 className="spin" size={16} /> : <Play size={16} />}
-              Run Attempt
+              Run attempt
             </button>
             <button
               className="secondary"
@@ -121,17 +183,21 @@ export function App() {
               title="Use the Improvement Memory Knowledge Asset for the next attempt"
             >
               <Brain size={16} />
-              Try With DKG Memory
+              Try with DKG memory
             </button>
             <button className="ghost" onClick={reset} disabled={loading} title="Reset the demo state">
               <RefreshCcw size={16} />
-              Reset
+              New demo session
             </button>
           </div>
           <ScoreStrip attempts={state.attempts} targetScore={state.target.targetScore} />
         </Panel>
 
-        <Panel icon={<Archive size={18} />} title="Attempts">
+        <Panel className="output-panel" icon={<Sparkles size={18} />} title="Latest Livepeer output">
+          {latestAttempt ? <OutputPreview attempt={latestAttempt} /> : <EmptyPreview />}
+        </Panel>
+
+        <Panel icon={<Archive size={18} />} title="Run ledger">
           <div className="attempt-list">
             {state.attempts.length === 0 ? (
               <EmptyAttempt />
@@ -141,18 +207,16 @@ export function App() {
           </div>
         </Panel>
 
-        <Panel icon={<Database size={18} />} title="DKG Memory">
-          <div className="memory-columns">
-            <MemoryBlock
-              title="Run Ledger"
-              lines={[
-                `${state.attempts.length} attempt records`,
-                `Target: ${state.runLedger["demo:targetId"]}`,
-                bestAttempt ? `Best score: ${bestAttempt.score}/10` : "No attempts yet"
-              ]}
+        <Panel icon={<Database size={18} />} title="DKG knowledge assets">
+          <div className="asset-grid">
+            <AssetCard
+              title="Run Ledger KA"
+              value={shortReference(state.receipt.runLedgerReference)}
+              lines={[`${state.attempts.length} attempt records`, bestAttempt ? `Best score ${bestAttempt.score}/10` : "Waiting for first run"]}
             />
-            <MemoryBlock
-              title="Improvement Memory"
+            <AssetCard
+              title="Improvement Memory KA"
+              value={shortReference(state.receipt.improvementMemoryReference)}
               lines={[
                 ...state.improvementMemory["demo:knownFailure"],
                 ...state.improvementMemory["demo:successfulPattern"],
@@ -162,21 +226,24 @@ export function App() {
           </div>
         </Panel>
 
-        <Panel icon={<Brain size={18} />} title="Judge">
+        <Panel icon={<Brain size={18} />} title="Remote judge">
           {bestAttempt ? (
             <div className="judge-box">
-              <strong>Best attempt: {bestAttempt.score}/10</strong>
+              <div className="score-lockup">
+                <strong>{bestAttempt.score}/10</strong>
+                <span className={bestAttempt.pass ? "pass" : "needs-work"}>
+                  {bestAttempt.pass ? "Target reached" : "Keep iterating"}
+                </span>
+              </div>
               <p>{bestAttempt.judgeOutputSummary}</p>
-              <span className={bestAttempt.pass ? "pass" : "needs-work"}>
-                {bestAttempt.pass ? "Target reached" : "Keep iterating"}
-              </span>
+              {bestAttempt.judgeReference ? <small>{bestAttempt.judgeReference}</small> : null}
             </div>
           ) : (
-            <p className="muted">The judge will score each output against the target rubric.</p>
+            <p className="muted">The judge scores each remote output against the brief and stores the result in DKG.</p>
           )}
         </Panel>
 
-        <Panel icon={<GitBranch size={18} />} title="Memory Used">
+        <Panel icon={<GitBranch size={18} />} title="Memory used in the next prompt">
           {memoryUsed.length ? (
             <ul className="memory-used">
               {memoryUsed.map((line) => (
@@ -184,7 +251,7 @@ export function App() {
               ))}
             </ul>
           ) : (
-            <p className="muted">Run a second attempt with DKG memory to show the handoff.</p>
+            <p className="muted">After attempt 1, run “Try with DKG memory” to show the DKG readback changing the next prompt.</p>
           )}
         </Panel>
       </section>
@@ -205,9 +272,9 @@ export function App() {
   );
 }
 
-function Panel({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
+function Panel({ icon, title, children, className = "" }: { icon: ReactNode; title: string; children: ReactNode; className?: string }) {
   return (
-    <section className="panel">
+    <section className={`panel ${className}`}>
       <header>
         <div className="panel-title">
           {icon}
@@ -221,7 +288,7 @@ function Panel({ icon, title, children }: { icon: React.ReactNode; title: string
 
 function StatusPill({ label, value, active }: { label: string; value: string; active?: boolean }) {
   return (
-    <div className="status-pill">
+    <div className={active ? "status-pill active" : "status-pill"}>
       <span>{label}</span>
       <strong>{value}</strong>
       {active ? <CheckCircle2 size={14} /> : null}
@@ -247,6 +314,35 @@ function ScoreStrip({ attempts, targetScore }: { attempts: AttemptRecord[]; targ
   );
 }
 
+function OutputPreview({ attempt }: { attempt: AttemptRecord }) {
+  const previewable = attempt.outputReference.startsWith("http");
+  return (
+    <div className="output-preview">
+      {previewable ? (
+        <img src={attempt.outputReference} alt={`Livepeer output for attempt ${attempt.attemptNumber}`} />
+      ) : (
+        <div className="preview-placeholder">Livepeer output reference created</div>
+      )}
+      <div className="output-meta">
+        <span>{attempt.usedDkgMemory ? "Generated with DKG memory" : "Generated from target only"}</span>
+        <a href={attempt.outputReference} target="_blank" rel="noreferrer">
+          Open output <ExternalLink size={14} />
+        </a>
+        {attempt.outputHash ? <code>{attempt.outputHash.slice(0, 16)}</code> : null}
+      </div>
+    </div>
+  );
+}
+
+function EmptyPreview() {
+  return (
+    <div className="preview-placeholder tall">
+      <Workflow size={22} />
+      <span>Run an attempt to create the first Livepeer output.</span>
+    </div>
+  );
+}
+
 function EmptyAttempt() {
   return (
     <div className="empty-attempt">
@@ -265,17 +361,18 @@ function AttemptRow({ attempt }: { attempt: AttemptRecord }) {
       </div>
       <p>{attempt.judgeOutputSummary}</p>
       <a href={attempt.outputReference} target="_blank" rel="noreferrer">
-        Output reference
+        Output <ExternalLink size={13} />
       </a>
       <b>{attempt.score}/10</b>
     </article>
   );
 }
 
-function MemoryBlock({ title, lines }: { title: string; lines: string[] }) {
+function AssetCard({ title, value, lines }: { title: string; value: string; lines: string[] }) {
   return (
-    <div className="memory-block">
+    <div className="asset-card">
       <strong>{title}</strong>
+      <code>{value}</code>
       <ul>
         {lines.filter(Boolean).map((line) => (
           <li key={line}>{line}</li>
@@ -283,4 +380,9 @@ function MemoryBlock({ title, lines }: { title: string; lines: string[] }) {
       </ul>
     </div>
   );
+}
+
+function shortReference(value: string): string {
+  const last = value.split("/").filter(Boolean).at(-1) ?? value;
+  return last.length > 48 ? `${last.slice(0, 45)}...` : last;
 }

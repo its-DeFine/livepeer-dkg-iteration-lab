@@ -67,17 +67,19 @@ export class DkgCliAdapter implements DkgAdapter {
       buildImprovementMemoryTurtle(state)
     );
     const contextGraphId = await this.resolveContextGraphId();
+    const runLedgerKaName = scopedKaName(this.runLedgerKaName, state.sessionId);
+    const improvementMemoryKaName = scopedKaName(this.improvementMemoryKaName, state.sessionId);
 
-    await this.upsertKnowledgeAsset(this.runLedgerKaName, contextGraphId, runLedgerTurtle);
-    await this.upsertKnowledgeAsset(this.improvementMemoryKaName, contextGraphId, improvementMemoryTurtle);
+    await this.upsertKnowledgeAsset(runLedgerKaName, contextGraphId, runLedgerTurtle);
+    await this.upsertKnowledgeAsset(improvementMemoryKaName, contextGraphId, improvementMemoryTurtle);
 
     if (state.attempts.length > 0) {
       await this.verifyLatestAttemptReadable(contextGraphId, state);
     }
 
     return {
-      runLedgerReference: `dkg:${contextGraphId}/${this.runLedgerKaName}`,
-      improvementMemoryReference: `dkg:${contextGraphId}/${this.improvementMemoryKaName}`,
+      runLedgerReference: `dkg:${contextGraphId}/${runLedgerKaName}`,
+      improvementMemoryReference: `dkg:${contextGraphId}/${improvementMemoryKaName}`,
       receiptReference: files.receiptReference
     };
   }
@@ -114,6 +116,31 @@ export class DkgCliAdapter implements DkgAdapter {
   }
 
   private async upsertKnowledgeAsset(name: string, contextGraphId: string, inputFile: string): Promise<void> {
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      try {
+        await this.upsertKnowledgeAssetOnce(name, contextGraphId, inputFile);
+        return;
+      } catch (error) {
+        if (!isTransientPromotionError(error) || attempt === 4) {
+          throw error;
+        }
+        await this.recoverTransientPromotion(name, contextGraphId);
+        await delay(attempt * 1500);
+      }
+    }
+  }
+
+  private async recoverTransientPromotion(name: string, contextGraphId: string): Promise<void> {
+    try {
+      await this.run(["assertion", "promote", name, "-c", contextGraphId]);
+    } catch (error) {
+      if (!isBenignPromotionRecoveryError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  private async upsertKnowledgeAssetOnce(name: string, contextGraphId: string, inputFile: string): Promise<void> {
     if (!(await this.knowledgeAssetExists(name, contextGraphId))) {
       try {
         await this.run(["ka", "create", name, "-c", contextGraphId, "--input-file", inputFile, "--share"]);
@@ -159,8 +186,8 @@ export class DkgCliAdapter implements DkgAdapter {
 
     const query = `PREFIX il: <https://atumera.com/hackathon/iteration-lab#>
 SELECT ?body WHERE {
-  ?thing il:forTarget ${iri(`target/${state.target.id}`)} ;
-    il:fromAttempt ${iri(`attempt/${state.target.id}/${latest.attemptNumber}`)} ;
+  ?thing il:forTarget ${targetIri(state)} ;
+    il:fromAttempt ${attemptIri(state, latest)} ;
     il:body ?body .
 }`;
 
@@ -179,7 +206,7 @@ SELECT ?body WHERE {
     const query = `PREFIX il: <https://atumera.com/hackathon/iteration-lab#>
 SELECT ?attempt ?score WHERE {
   ?attempt a il:LivepeerRun ;
-    il:forTarget ${iri(`target/${state.target.id}`)} ;
+    il:forTarget ${targetIri(state)} ;
     il:attemptNumber ${latest.attemptNumber} ;
     il:evaluationScore ?score .
 }
@@ -217,6 +244,14 @@ function parseCreatedContextGraphId(output: string): string | undefined {
   return output.match(/ID:\s+([^\s]+)/)?.[1];
 }
 
+function isTransientPromotionError(error: unknown): boolean {
+  return error instanceof Error && /unfinished promote|retry assertionPromote|share operation|promotion/i.test(error.message);
+}
+
+function isBenignPromotionRecoveryError(error: unknown): boolean {
+  return error instanceof Error && /No quads were promoted|already shared|already promoted|no triples|No quads/i.test(error.message);
+}
+
 function isExistingKnowledgeAssetEditError(error: unknown): boolean {
   return (
     error instanceof Error &&
@@ -224,6 +259,10 @@ function isExistingKnowledgeAssetEditError(error: unknown): boolean {
       error.message
     )
   );
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function parseSparqlLiteral(value: string): string {
@@ -266,7 +305,7 @@ function redactDkgError(error: unknown): string {
 }
 
 function buildRunLedgerTurtle(state: DemoState): string {
-  const target = iri(`target/${state.target.id}`);
+  const target = targetIri(state);
   const lines = [prefixes()];
 
   lines.push(`${target} a il:Target ;`);
@@ -291,8 +330,8 @@ function buildRunLedgerTurtle(state: DemoState): string {
 
 function attemptTurtle(state: DemoState, attempt: AttemptRecord): string {
   return [
-    `${iri(`attempt/${state.target.id}/${attempt.attemptNumber}`)} a il:LivepeerRun ;`,
-    `  il:forTarget ${iri(`target/${state.target.id}`)} ;`,
+    `${attemptIri(state, attempt)} a il:LivepeerRun ;`,
+    `  il:forTarget ${targetIri(state)} ;`,
     `  il:attemptNumber ${attempt.attemptNumber} ;`,
     `  il:usedDkgMemory ${attempt.usedDkgMemory ? "true" : "false"} ;`,
     `  il:promptSummary ${literal(attempt.promptSummary)} ;`,
@@ -302,13 +341,14 @@ function attemptTurtle(state: DemoState, attempt: AttemptRecord): string {
     `  il:evaluationScore ${attempt.score} ;`,
     `  il:passedTarget ${attempt.pass ? "true" : "false"} ;`,
     `  il:judgeOutput ${literal(attempt.judgeOutputSummary)} ;`,
+    `  il:judgeReference ${literal(attempt.judgeReference ?? "")} ;`,
     `  il:createdAt ${dateTimeLiteral(attempt.createdAt)} .`
   ].join("\n");
 }
 
 function buildImprovementMemoryTurtle(state: DemoState): string {
-  const target = iri(`target/${state.target.id}`);
-  const memory = iri(`memory/${state.target.id}`);
+  const target = targetIri(state);
+  const memory = iri(`memory/${state.sessionId}/${state.target.id}`);
   const latest = state.attempts.at(-1);
   const lines = [prefixes()];
 
@@ -320,10 +360,10 @@ function buildImprovementMemoryTurtle(state: DemoState): string {
   writeMemoryNotes(lines, state, latest, "knownFailure", state.improvementMemory["demo:knownFailure"]);
   writeMemoryNotes(lines, state, latest, "successfulPattern", state.improvementMemory["demo:successfulPattern"]);
 
-  lines.push(`${iri(`strategy/${state.target.id}/${latest?.attemptNumber ?? 0}`)} a il:PromptStrategy ;`);
+  lines.push(`${iri(`strategy/${state.sessionId}/${state.target.id}/${latest?.attemptNumber ?? 0}`)} a il:PromptStrategy ;`);
   lines.push(`  il:forTarget ${target} ;`);
   if (latest) {
-    lines.push(`  il:fromAttempt ${iri(`attempt/${state.target.id}/${latest.attemptNumber}`)} ;`);
+    lines.push(`  il:fromAttempt ${attemptIri(state, latest)} ;`);
   }
   lines.push(`  il:body ${literal(state.improvementMemory["demo:nextPromptStrategy"])} .`);
 
@@ -338,14 +378,26 @@ function writeMemoryNotes(
   notes: string[]
 ): void {
   notes.forEach((note, index) => {
-    lines.push(`${iri(`memory-note/${state.target.id}/${latest?.attemptNumber ?? 0}/${category}/${index + 1}`)} a il:MemoryObservation ;`);
-    lines.push(`  il:forTarget ${iri(`target/${state.target.id}`)} ;`);
+    lines.push(`${iri(`memory-note/${state.sessionId}/${state.target.id}/${latest?.attemptNumber ?? 0}/${category}/${index + 1}`)} a il:MemoryObservation ;`);
+    lines.push(`  il:forTarget ${targetIri(state)} ;`);
     if (latest) {
-      lines.push(`  il:fromAttempt ${iri(`attempt/${state.target.id}/${latest.attemptNumber}`)} ;`);
+      lines.push(`  il:fromAttempt ${attemptIri(state, latest)} ;`);
     }
     lines.push(`  il:category ${literal(category)} ;`);
     lines.push(`  il:body ${literal(note)} .`);
   });
+}
+
+function scopedKaName(baseName: string, sessionId: string): string {
+  return `${baseName}-${slug(sessionId)}`.slice(0, 120);
+}
+
+function targetIri(state: DemoState): string {
+  return iri(`target/${state.sessionId}/${state.target.id}`);
+}
+
+function attemptIri(state: DemoState, attempt: Pick<AttemptRecord, "attemptNumber">): string {
+  return iri(`attempt/${state.sessionId}/${state.target.id}/${attempt.attemptNumber}`);
 }
 
 function prefixes(): string {

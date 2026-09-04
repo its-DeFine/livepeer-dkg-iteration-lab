@@ -21,7 +21,7 @@ npm run dev
 
 Open `http://localhost:8080`.
 
-The checked-in Docker configuration uses real mode: Livepeer raw MCP plus a local DKG edge node. For local development without DKG, set `LIVEPEER_MODE=mock` and `DKG_MODE=file` in `.env`.
+The checked-in Docker configuration uses real mode: Livepeer raw MCP, a remote Livepeer-backed judge, and a local DKG edge node. For local development without remote calls or DKG, set `LIVEPEER_MODE=mock`, `JUDGE_MODE=mock`, and `DKG_MODE=file` in `.env`.
 
 ## Run With Docker
 
@@ -76,12 +76,19 @@ Livepeer:
 - The app calls the remote Livepeer raw MCP surface. It does not run Livepeer capabilities, models, renderers, or LiveBridge components locally.
 - Keep bearer tokens in the runtime environment, never in Git.
 
+Judge:
+
+- Set `JUDGE_MODE=real`.
+- By default, the judge calls the same remote Livepeer raw MCP endpoint with `gemini-text`.
+- The judge stores a compact score, feedback sentence, and judge reference in the Run Ledger Knowledge Asset.
+- It does not run a local LLM, image model, renderer, or Livepeer capability.
+
 DKG:
 
 - Use `DKG_MODE=cli` in Docker.
 - Run `./scripts/init-dkg-volume.sh` once to initialize the local DKG home volume.
 - Set `DKG_CONTEXT_GRAPH_NAME` to a short demo graph name. The app resolves or creates the full Context Graph ID.
-- The CLI adapter writes `iteration-lab-run-ledger` and `iteration-lab-improvement-memory` Knowledge Assets and shares them to Shared Working Memory.
+- The CLI adapter writes session-scoped Run Ledger and Improvement Memory Knowledge Assets and shares them to Shared Working Memory. Each reset starts a fresh KA pair so workshop retries do not reuse stale working drafts.
 - Publish to Verifiable Memory only when finality is useful and wallet/network setup is ready.
 
 ## DKG CLI Shape

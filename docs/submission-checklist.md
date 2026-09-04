@@ -1,6 +1,6 @@
 # Submission Checklist
 
-Before submitting a project based on this starter app, make sure you can show:
+Before submitting a project based on this demo app, make sure you can show:
 
 - What target your app tried to produce.
 - Which Livepeer output references were created.

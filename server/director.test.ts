@@ -1,10 +1,16 @@
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { createDirector } from "./director.js";
 
 describe("Director improvement loop", () => {
+  beforeEach(() => {
+    process.env.LIVEPEER_MODE = "mock";
+    process.env.DKG_MODE = "file";
+    process.env.JUDGE_MODE = "mock";
+  });
+
   it("records attempts and improves when DKG memory is used", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "iteration-lab-"));
     const director = createDirector(dataDir);
@@ -15,6 +21,8 @@ describe("Director improvement loop", () => {
     expect(first.attempt.score).toBe(3);
     expect(second.attempt.score).toBeGreaterThan(first.attempt.score);
     expect(second.attempt.usedDkgMemory).toBe(true);
+    expect(second.attempt.judgeReference).toContain("mock:judge");
+    expect(second.state.sessionId).toContain("session-");
     expect(second.state.runLedger["demo:hasAttempt"]).toHaveLength(2);
     expect(second.state.improvementMemory["demo:latestScore"]).toBe(second.attempt.score);
 

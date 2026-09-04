@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import type {
   AttemptRecord,
   ConfigStatus,
@@ -11,6 +12,7 @@ import type {
 } from "../shared/types.js";
 import { createDkgAdapter } from "./adapters/dkg.js";
 import { createLivepeerAdapter } from "./adapters/livepeer.js";
+import { createJudgeAdapter } from "./adapters/judge.js";
 import { JsonStateStore } from "./storage.js";
 
 const demoContext = {
@@ -22,20 +24,26 @@ export function createDirector(dataDir: string) {
   const store = new JsonStateStore(dataDir);
   const livepeer = createLivepeerAdapter();
   const dkg = createDkgAdapter(store);
+  const judge = createJudgeAdapter();
 
   async function getState(): Promise<DemoState> {
     const existing = await store.read();
     if (existing) {
+      if (!existing.sessionId) {
+        const migrated = { ...existing, sessionId: createSessionId() };
+        await writeLocalState(migrated);
+        return migrated;
+      }
       return existing;
     }
     const state = createInitialState(defaultTarget());
-    await persist(state);
+    await writeLocalState(state);
     return state;
   }
 
   async function reset(): Promise<DemoState> {
     const state = createInitialState(defaultTarget());
-    await persist(state);
+    await writeLocalState(state);
     return state;
   }
 
@@ -46,7 +54,15 @@ export function createDirector(dataDir: string) {
     const memoryUsed = request.useDkgMemory ? await dkg.readMemory(current) : [];
     const prompt = buildPrompt(target, memoryUsed, attemptNumber);
     const media = await livepeer.generate({ attemptNumber, prompt, target });
-    const judge = judgeAttempt(attemptNumber, request.useDkgMemory, current.improvementMemory);
+    const judgment = await judge.judge({
+      attemptNumber,
+      usedDkgMemory: request.useDkgMemory,
+      memoryUsed,
+      prompt,
+      target,
+      media,
+      improvementMemory: current.improvementMemory
+    });
 
     const attempt: AttemptRecord = {
       id: `${target.id}-attempt-${attemptNumber}`,
@@ -56,17 +72,19 @@ export function createDirector(dataDir: string) {
       usedDkgMemory: request.useDkgMemory,
       outputReference: media.outputReference,
       outputHash: media.outputHash,
-      score: judge.score,
-      pass: judge.score >= target.targetScore,
-      judgeOutputSummary: judge.feedback,
+      score: judgment.score,
+      pass: judgment.score >= target.targetScore,
+      judgeOutputSummary: judgment.feedback,
+      judgeReference: judgment.reference,
       createdAt: new Date().toISOString()
     };
 
     const attempts = attemptNumber === 1 ? [attempt] : [...current.attempts, attempt];
-    const runLedger = buildRunLedger(target, attempts);
-    const improvementMemory = buildImprovementMemory(target, attempts);
+    const runLedger = buildRunLedger(current.sessionId, target, attempts);
+    const improvementMemory = buildImprovementMemory(current.sessionId, target, attempts);
     const receipt = buildReceipt(target, attempts, runLedger, improvementMemory);
     const nextState: DemoState = {
+      sessionId: current.sessionId,
       target,
       attempts,
       runLedger,
@@ -79,12 +97,16 @@ export function createDirector(dataDir: string) {
     return { state: nextState, attempt, memoryUsed };
   }
 
+  async function writeLocalState(state: DemoState): Promise<void> {
+    await store.write(state);
+    await store.writeJson("submission-receipt.json", state.receipt);
+  }
+
   async function persist(state: DemoState): Promise<void> {
     const references = await dkg.writeState(state);
     state.receipt.runLedgerReference = references.runLedgerReference;
     state.receipt.improvementMemoryReference = references.improvementMemoryReference;
-    await store.write(state);
-    await store.writeJson("submission-receipt.json", state.receipt);
+    await writeLocalState(state);
   }
 
   return {
@@ -95,14 +117,24 @@ export function createDirector(dataDir: string) {
   };
 }
 
+function createSessionId(): string {
+  const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  return `session-${date}-${crypto.randomUUID().slice(0, 8)}`;
+}
+
 function getConfig(): ConfigStatus {
+  const livepeerConfigured = process.env.LIVEPEER_MODE === "real" ? Boolean(process.env.LIVEPEER_MCP_URL) : true;
+  const judgeConfigured =
+    process.env.JUDGE_MODE === "real" ? Boolean(process.env.JUDGE_LIVEPEER_MCP_URL || process.env.LIVEPEER_MCP_URL) : true;
+
   return {
     livepeerMode: process.env.LIVEPEER_MODE === "real" ? "real" : "mock",
     dkgMode: process.env.DKG_MODE === "cli" ? "cli" : "file",
     judgeMode: process.env.JUDGE_MODE === "real" ? "real" : "mock",
-    livepeerConfigured: process.env.LIVEPEER_MODE === "real" ? Boolean(process.env.LIVEPEER_MCP_URL) : true,
+    livepeerConfigured,
     dkgConfigured:
-      process.env.DKG_MODE === "cli" ? Boolean(process.env.DKG_CONTEXT_GRAPH_ID || process.env.DKG_CONTEXT_GRAPH_NAME) : true
+      process.env.DKG_MODE === "cli" ? Boolean(process.env.DKG_CONTEXT_GRAPH_ID || process.env.DKG_CONTEXT_GRAPH_NAME) : true,
+    judgeConfigured
   };
 }
 
@@ -125,10 +157,12 @@ function defaultTarget(): TargetSpec {
 
 function createInitialState(target: TargetSpec): DemoState {
   const attempts: AttemptRecord[] = [];
-  const runLedger = buildRunLedger(target, attempts);
-  const improvementMemory = buildImprovementMemory(target, attempts);
+  const sessionId = createSessionId();
+  const runLedger = buildRunLedger(sessionId, target, attempts);
+  const improvementMemory = buildImprovementMemory(sessionId, target, attempts);
   const receipt = buildReceipt(target, attempts, runLedger, improvementMemory);
   return {
+    sessionId,
     target,
     attempts,
     runLedger,
@@ -136,14 +170,6 @@ function createInitialState(target: TargetSpec): DemoState {
     receipt,
     updatedAt: new Date().toISOString()
   };
-}
-
-function selectMemory(memory: ImprovementMemoryKa): string[] {
-  return [
-    ...memory["demo:knownFailure"],
-    ...memory["demo:successfulPattern"],
-    memory["demo:nextPromptStrategy"]
-  ].filter(Boolean);
 }
 
 function buildPrompt(target: TargetSpec, memoryUsed: string[], attemptNumber: number): string {
@@ -164,36 +190,15 @@ function summarizePrompt(prompt: string): string {
   return prompt.replace(/\s+/g, " ").slice(0, 180);
 }
 
-function judgeAttempt(
-  attemptNumber: number,
-  usedDkgMemory: boolean,
-  memory: ImprovementMemoryKa
-): { score: number; feedback: string } {
-  if (attemptNumber === 1 || !usedDkgMemory) {
-    return {
-      score: 3,
-      feedback:
-        "The output has a usable cinematic direction, but the product is not explicit enough and the ending frame is not yet clean."
-    };
-  }
-
-  const priorScore = memory["demo:latestScore"] || 3;
-  const score = Math.min(9, priorScore + 3);
-  const feedback =
-    score >= 8
-      ? "The output now preserves the cinematic tone, makes the product clearer, and gives the final frame a stronger thumbnail shape."
-      : "The output improves product visibility and tone, but the final frame still needs a clearer ending composition.";
-  return { score, feedback };
-}
-
-function buildRunLedger(target: TargetSpec, attempts: AttemptRecord[]): RunLedgerKa {
+function buildRunLedger(sessionId: string, target: TargetSpec, attempts: AttemptRecord[]): RunLedgerKa {
   return {
     "@context": demoContext,
-    "@id": `demo:run-ledger/${target.id}`,
+    "@id": `demo:run-ledger/${sessionId}/${target.id}`,
     "@type": "demo:RunLedger",
     "demo:targetId": target.id,
+    "demo:sessionId": sessionId,
     "demo:hasAttempt": attempts.map((attempt) => ({
-      "@id": `demo:attempt/${target.id}/${attempt.attemptNumber}`,
+      "@id": `demo:attempt/${sessionId}/${target.id}/${attempt.attemptNumber}`,
       "@type": "demo:GenerationAttempt",
       "demo:attemptNumber": attempt.attemptNumber,
       "demo:promptSummary": attempt.promptSummary,
@@ -203,12 +208,13 @@ function buildRunLedger(target: TargetSpec, attempts: AttemptRecord[]): RunLedge
       "demo:score": attempt.score,
       "demo:pass": attempt.pass,
       "demo:judgeOutputSummary": attempt.judgeOutputSummary,
+      "demo:judgeReference": attempt.judgeReference,
       "demo:createdAt": attempt.createdAt
     }))
   };
 }
 
-function buildImprovementMemory(target: TargetSpec, attempts: AttemptRecord[]): ImprovementMemoryKa {
+function buildImprovementMemory(sessionId: string, target: TargetSpec, attempts: AttemptRecord[]): ImprovementMemoryKa {
   const bestAttempt = attempts.reduce<AttemptRecord | undefined>(
     (best, attempt) => (!best || attempt.score > best.score ? attempt : best),
     undefined
@@ -217,10 +223,11 @@ function buildImprovementMemory(target: TargetSpec, attempts: AttemptRecord[]): 
 
   return {
     "@context": demoContext,
-    "@id": `demo:improvement-memory/${target.id}`,
+    "@id": `demo:improvement-memory/${sessionId}/${target.id}`,
     "@type": "demo:ImprovementMemory",
     "demo:targetId": target.id,
-    "demo:currentBestAttempt": bestAttempt ? `demo:attempt/${target.id}/${bestAttempt.attemptNumber}` : undefined,
+    "demo:sessionId": sessionId,
+    "demo:currentBestAttempt": bestAttempt ? `demo:attempt/${sessionId}/${target.id}/${bestAttempt.attemptNumber}` : undefined,
     "demo:knownFailure": latest?.score && latest.score < target.targetScore
       ? ["Product visibility needs to be explicit.", "The ending frame needs a cleaner composition."]
       : [],

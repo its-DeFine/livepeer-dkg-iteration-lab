@@ -1,17 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
   BrainCircuit,
   Check,
   ChevronDown,
   Download,
+  Copy,
+  ExternalLink,
+  Columns2,
   FileJson,
   Film,
   Image as ImageIcon,
   Layers3,
   LoaderCircle,
   Music2,
-  Network,
   Plus,
   ShieldCheck,
   Sparkles,
@@ -30,6 +32,7 @@ import type {
   RunLedgerKa,
   WorkspaceState
 } from "../shared/types";
+import { KnowledgeGraph } from "./KnowledgeGraph";
 import "./styles.css";
 
 type AssetTab = "graph" | "ledger" | "memory" | "changes";
@@ -56,12 +59,17 @@ export function App() {
   const [busy, setBusy] = useState<"baseline" | "memory" | "create" | null>(null);
   const [error, setError] = useState("");
   const [pendingProjectId, setPendingProjectId] = useState<string | null>(null);
-  const [userDirection, setUserDirection] = useState("");
+  const [directions, setDirections] = useState<Record<string, string>>({});
+  const [activeProjectId, setActiveProjectId] = useState("");
+  const [creatingBusy, setCreatingBusy] = useState(false);
+  const [compare, setCompare] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     void Promise.all([getJson<WorkspaceState>("/api/state"), getJson<ConfigStatus>("/api/config")])
       .then(([nextWorkspace, nextConfig]) => {
         setWorkspace(nextWorkspace);
+        setActiveProjectId(nextWorkspace.activeProjectId);
         setConfig(nextConfig);
       })
       .catch((cause) => setError(messageOf(cause)));
@@ -88,7 +96,7 @@ export function App() {
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [hasActiveJobs, attemptRequestPending]);
 
-  const project = workspace?.projects.find((candidate) => candidate.projectId === workspace.activeProjectId)
+  const project = workspace?.projects.find((candidate) => candidate.projectId === (activeProjectId || workspace.activeProjectId))
     ?? workspace?.projects[0]
     ?? null;
 
@@ -96,9 +104,11 @@ export function App() {
     if (project) setSelectedTry(Math.max(0, project.attempts.length - 1));
   }, [project?.projectId, project?.attempts.length]);
 
-  useEffect(() => {
-    setUserDirection("");
-  }, [project?.projectId]);
+  const userDirection = directions[project?.projectId ?? ""] ?? "";
+  function setUserDirection(value: string) {
+    if (project) setDirections((current) => ({ ...current, [project.projectId]: value }));
+  }
+  useEffect(() => { setCompare(false); setCopied(false); }, [project?.projectId, selectedTry]);
 
   const snapshot = project?.iterationSnapshots[selectedTry] ?? null;
   const attempt = project?.attempts[selectedTry] ?? null;
@@ -108,7 +118,8 @@ export function App() {
     : null;
 
   async function selectProject(projectId: string) {
-    if (!workspace || projectId === workspace.activeProjectId) return;
+    if (!workspace || projectId === project?.projectId) return;
+    setActiveProjectId(projectId);
     setError("");
     try {
       setWorkspace(await postJson<WorkspaceState>(`/api/projects/${encodeURIComponent(projectId)}/select`, {}));
@@ -129,7 +140,7 @@ export function App() {
         { useDkgMemory, userDirection }
       );
       setWorkspace(result.workspace);
-      setUserDirection("");
+      setDirections((current) => ({ ...current, [projectId]: "" }));
     } catch (cause) {
       setError(messageOf(cause));
       try {
@@ -144,7 +155,7 @@ export function App() {
   }
 
   async function createProject() {
-    setBusy("create");
+    setCreatingBusy(true);
     setError("");
     try {
       const request = {
@@ -152,13 +163,15 @@ export function App() {
         successCriteria: form.successCriteria.map((item) => item.trim()).filter(Boolean),
         avoid: form.avoid.map((item) => item.trim()).filter(Boolean)
       };
-      setWorkspace(await postJson<WorkspaceState>("/api/projects", request));
+      const created = await postJson<WorkspaceState>("/api/projects", request);
+      setWorkspace(created);
+      setActiveProjectId(created.activeProjectId);
       setCreating(false);
       setForm(emptyForm);
     } catch (cause) {
       setError(messageOf(cause));
     } finally {
-      setBusy(null);
+      setCreatingBusy(false);
     }
   }
 
@@ -168,6 +181,7 @@ export function App() {
         <span className="brand-mark"><Sparkles size={18} /></span>
         <LoaderCircle className="spin" />
         <p>{error || "Opening the iteration workspace..."}</p>
+        {error && <button className="primary" onClick={() => window.location.reload()}>Try again</button>}
       </main>
     );
   }
@@ -218,11 +232,11 @@ export function App() {
 
         <div className="top-actions">
           <div className="integration-pills" aria-label="Integration status">
-            <StatusPill label="Livepeer" active={config.livepeerConfigured} />
-            <StatusPill label="DKG" active={config.dkgConfigured} />
-            <StatusPill label="Blind judge" active={config.judgeConfigured} />
+            <StatusPill label={config.livepeerMode === "real" ? "Livepeer · remote" : "Livepeer · demo"} active={config.livepeerConfigured} />
+            <StatusPill label={config.dkgMode === "cli" ? "DKG · edge" : "Memory · file demo"} active={config.dkgConfigured} />
+            <StatusPill label={config.judgeMode === "real" ? "Judge · remote" : "Judge · demo"} active={config.judgeConfigured} />
           </div>
-          <a className="icon-button" href={`/api/receipt?projectId=${encodeURIComponent(project.projectId)}`} title="Export receipt">
+          <a className="icon-button" href={`/api/receipt?projectId=${encodeURIComponent(project.projectId)}`} title="Export receipt" aria-label="Export project receipt" target="_blank" rel="noreferrer">
             <Download size={17} />
           </a>
           <button className="primary compact" onClick={() => setCreating(true)}>
@@ -293,7 +307,7 @@ export function App() {
 
           <div className="rail-note">
             <ShieldCheck size={16} />
-            <p><strong>Private by design</strong>DKG stores structured evidence and references, never raw media or secrets.</p>
+            <p><strong>The learning loop</strong>Each Try adds evidence. The next Try reads reusable observations from memory.</p>
           </div>
         </aside>
 
@@ -306,11 +320,86 @@ export function App() {
             </div>
           </div>
 
+
+
+
+          <div className="workshop-flow" aria-label="How an iteration works">
+            <span><b>01</b> Direct</span><ArrowRight size={14} /><span><b>02</b> Generate</span><ArrowRight size={14} /><span><b>03</b> Evaluate</span><ArrowRight size={14} /><span><b>04</b> Remember</span>
+          </div>
+          {latestFailedJob && !activeJob && (
+            <div className="job-failure-notice" role="status">
+              <span><X size={15} /></span>
+              <div>
+                <strong>Try {latestFailedJob.attemptNumber} stopped during {jobStatusLabel(latestFailedJob).toLowerCase()}</strong>
+                <p>{latestFailedJob.error ?? "The run did not complete."}</p>
+              </div>
+            </div>
+          )}
+
+
+          {attempt && (
+            <div className="artifact-toolbar">
+              <div><span className="eyebrow">Selected artifact</span><strong>Try {attempt.attemptNumber} <small>{mediaLabel(attempt.mediaType)}</small></strong></div>
+              <div>
+                {selectedTry > 0 && <button className={compare ? "secondary selected" : "secondary"} aria-pressed={compare} onClick={() => setCompare(!compare)}><Columns2 size={16} />{compare ? "Single view" : "Compare previous"}</button>}
+                {mediaUrl(attempt.outputReference) && <a className="secondary" href={mediaUrl(attempt.outputReference)!} target="_blank" rel="noreferrer"><ExternalLink size={15} />Open output</a>}
+              </div>
+            </div>
+          )}
+          <div className={compare && selectedTry > 0 ? "artifact-comparison" : ""}>
+            {compare && selectedTry > 0 && (
+              <div>
+                <p className="comparison-label">Try {project.attempts[selectedTry - 1].attemptNumber} <span>{project.attempts[selectedTry - 1].score}/10</span></p>
+                <div className="artifact-frame"><MediaPreview type={project.attempts[selectedTry - 1].mediaType} reference={project.attempts[selectedTry - 1].outputReference} title="Previous Try" /></div>
+              </div>
+            )}
+            <div>
+              {compare && attempt && <p className="comparison-label">Try {attempt.attemptNumber} <span>{attempt.score}/10</span></p>}
+          <div className={`artifact-frame ${!attempt ? "empty" : ""}`}>
+            {attempt ? (
+              <MediaPreview type={attempt.mediaType} reference={attempt.outputReference} title={project.target.title} />
+            ) : (
+              <div className="empty-artifact">
+                <span><MediaGlyph type={project.target.mediaType} /></span>
+                <h3>Turn this brief into the first artifact</h3>
+                <p>Add your direction below, then generate your first Try. Its evaluation and memory will appear alongside it.</p>
+              </div>
+            )}
+            {isProjectRunning && (
+              <div className="job-overlay">
+                <LoaderCircle className="spin" />
+                <strong>Try {activeJob?.attemptNumber ?? nextAttemptNumber} - {activeJob ? jobStatusLabel(activeJob) : "Starting"}</strong>
+                <span>This job stays attached to {project.target.title}, even if you open another project.</span>
+              </div>
+            )}
+          </div>
+
+
+            </div>
+          </div>
+          {attempt && (
+            <div className="evaluation-card">
+              <div className="score-orb">
+                <strong>{score}</strong><span>/10</span>
+              </div>
+              <div>
+                <div className="evaluation-title">
+                  <p className="eyebrow">Blind evaluation</p>
+                  <span className={attempt.pass ? "pass-label" : "iterate-label"}>
+                    {attempt.pass ? "Target reached" : "Keep iterating"}
+                  </span>
+                </div>
+                <p>{attempt.judgeOutputSummary}</p>
+                <small>Independent evaluation · artifact and target criteria only. Scores are model judgments, not a guarantee of improvement.</small>
+              </div>
+            </div>
+          )}
+
           <section className="try-composer" aria-labelledby="try-composer-title">
             <div className="composer-topline">
               <div>
                 <p className="eyebrow">Compose Try {nextAttemptNumber}</p>
-                <h3 id="try-composer-title">Guide the Director</h3>
+                <h3 id="try-composer-title">{project.attempts.length ? "What should improve next?" : "Create your first artifact"}</h3>
               </div>
               <div className="composition-path" aria-label="Prompt composition path">
                 <span>Target</span>
@@ -337,7 +426,7 @@ export function App() {
               onChange={(event) => setUserDirection(event.target.value)}
             />
             <div className="composer-footer">
-              <small>The Director combines this with the target and sanitized graph observations. Your text is not copied into shared DKG assets or shown to the blind judge.</small>
+              <small>The Director combines this with the target and sanitized graph observations. The full prompt stays in this workspace; the judge evaluates the artifact against the target.</small>
               <button
                 className="primary"
                 disabled={isRunning}
@@ -353,59 +442,12 @@ export function App() {
             </div>
           </section>
 
-          {latestFailedJob && !activeJob && (
-            <div className="job-failure-notice" role="status">
-              <span><X size={15} /></span>
-              <div>
-                <strong>Try {latestFailedJob.attemptNumber} stopped during {jobStatusLabel(latestFailedJob).toLowerCase()}</strong>
-                <p>{latestFailedJob.error ?? "The run did not complete."}</p>
-              </div>
-            </div>
-          )}
-
-          <div className={`artifact-frame ${!attempt ? "empty" : ""}`}>
-            {attempt ? (
-              <MediaPreview type={attempt.mediaType} reference={attempt.outputReference} title={project.target.title} />
-            ) : (
-              <div className="empty-artifact">
-                <span><MediaGlyph type={project.target.mediaType} /></span>
-                <h3>Turn this brief into the first artifact</h3>
-                <p>Add an optional direction above, then let the Director compose and run the complete prompt.</p>
-              </div>
-            )}
-            {isProjectRunning && (
-              <div className="job-overlay">
-                <LoaderCircle className="spin" />
-                <strong>Try {activeJob?.attemptNumber ?? nextAttemptNumber} - {activeJob ? jobStatusLabel(activeJob) : "Starting"}</strong>
-                <span>This job stays attached to {project.target.title}, even if you open another project.</span>
-              </div>
-            )}
-          </div>
-
-          {attempt && (
-            <div className="evaluation-card">
-              <div className="score-orb">
-                <strong>{score}</strong><span>/10</span>
-              </div>
-              <div>
-                <div className="evaluation-title">
-                  <p className="eyebrow">Blind evaluation</p>
-                  <span className={attempt.pass ? "pass-label" : "iterate-label"}>
-                    {attempt.pass ? "Target reached" : "Keep iterating"}
-                  </span>
-                </div>
-                <p>{attempt.judgeOutputSummary}</p>
-                <small>The judge received only the artifact and target criteria.</small>
-              </div>
-            </div>
-          )}
-
           {attempt && (
             <div className="prompt-trace-card">
               <div className="prompt-trace-heading">
                 <span><BrainCircuit size={15} /> Director prompt for Try {attempt.attemptNumber}</span>
                 <span className={`prompt-integrity ${attempt.promptTextVerified ? "verified" : "recovered"}`}>
-                  {attempt.promptTextVerified ? "Fingerprint verified" : "Historical reconstruction"}
+                  {attempt.promptTextVerified ? "Fingerprint verified" : "Historical · unverified"}
                 </span>
               </div>
               <div className="prompt-provenance">
@@ -415,13 +457,17 @@ export function App() {
                 <ArrowRight size={13} />
                 <strong>Final generation prompt</strong>
               </div>
-              <pre className="prompt-text">{attempt.promptText}</pre>
+              <details className="prompt-disclosure">
+                <summary>Read the full generation prompt <ChevronDown size={15} /></summary>
+                <button className="copy-prompt secondary" onClick={async () => { try { await navigator.clipboard.writeText(attempt.promptText); setCopied(true); } catch { setError("Copy is unavailable. Select the prompt text to copy it."); } }}><Copy size={14} />{copied ? "Copied" : "Copy prompt"}</button>
+                <pre className="prompt-text">{attempt.promptText}</pre>
+              </details>
               <div className="prompt-trace-meta">
                 <code>{attempt.promptHash}</code>
                 <small>
                   {attempt.promptTextVerified
                     ? "This private prompt matches the fingerprint stored with the run."
-                    : "This older run predates private prompt storage; the displayed reconstruction does not match its historical fingerprint."}
+                    : "This historical prompt cannot be verified against an originally stored prompt and fingerprint pair. It may be reconstructed."}
                   {" "}Only the fingerprint, structured evidence, and relationships are shared to DKG.
                 </small>
               </div>
@@ -473,15 +519,15 @@ export function App() {
             {snapshot && <DkgStatus snapshot={snapshot} />}
           </div>
 
-          <div className="asset-tabs" role="tablist">
-            <button className={assetTab === "graph" ? "active" : ""} onClick={() => setAssetTab("graph")}>Graph</button>
-            <button className={assetTab === "ledger" ? "active" : ""} onClick={() => setAssetTab("ledger")}>Run Ledger</button>
-            <button className={assetTab === "memory" ? "active" : ""} onClick={() => setAssetTab("memory")}>Improvement Memory</button>
-            <button className={assetTab === "changes" ? "active" : ""} onClick={() => setAssetTab("changes")}>Changes</button>
+          <div className="asset-tabs" role="tablist" aria-label="Knowledge asset views">
+            <button role="tab" aria-selected={assetTab === "graph"} className={assetTab === "graph" ? "active" : ""} onClick={() => setAssetTab("graph")}>Graph</button>
+            <button role="tab" aria-selected={assetTab === "ledger"} className={assetTab === "ledger" ? "active" : ""} onClick={() => setAssetTab("ledger")}>Run Ledger</button>
+            <button role="tab" aria-selected={assetTab === "memory"} className={assetTab === "memory" ? "active" : ""} onClick={() => setAssetTab("memory")}>Memory</button>
+            <button role="tab" aria-selected={assetTab === "changes"} className={assetTab === "changes" ? "active" : ""} onClick={() => setAssetTab("changes")}>Changes</button>
           </div>
 
           {snapshot ? (
-            <div className="inspector-body">
+            <div className="inspector-body" role="tabpanel">
               {(assetTab === "ledger" || assetTab === "memory") && (
                 <div className="view-switch">
                   {(["visual", "jsonld", "rdf"] as DataView[]).map((view) => (
@@ -491,7 +537,7 @@ export function App() {
                   ))}
                 </div>
               )}
-              {assetTab === "graph" && <KnowledgeGraphVisual snapshot={snapshot} />}
+              {assetTab === "graph" && <KnowledgeGraph snapshot={snapshot} />}
               {assetTab === "ledger" && (
                 <AssetView
                   view={dataView}
@@ -512,7 +558,7 @@ export function App() {
               <div className="asset-footnote">
                 <FileJson size={15} />
                 <span>{assetTab === "memory" ? shortId(snapshot.improvementMemory["@id"]) : shortId(snapshot.runLedger["@id"])}</span>
-                <span>Current schema projection of immutable Try {snapshot.attemptNumber}</span>
+                <span>Evidence captured after Try {snapshot.attemptNumber}</span>
               </div>
             </div>
           ) : (
@@ -530,7 +576,7 @@ export function App() {
           form={form}
           setForm={setForm}
           profiles={config.mediaProfiles}
-          busy={busy === "create"}
+          busy={creatingBusy}
           onClose={() => setCreating(false)}
           onSubmit={() => void createProject()}
         />
@@ -554,12 +600,26 @@ function ProjectModal({
   onClose: () => void;
   onSubmit: () => void;
 }) {
+  const dialog = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    dialog.current?.querySelector<HTMLInputElement>("input")?.focus();
+    return () => previous?.focus();
+  }, []);
   return (
-    <div className="modal-backdrop" role="presentation">
-      <section className="project-modal" role="dialog" aria-modal="true" aria-labelledby="new-project-title">
+    <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
+      <section ref={dialog} className="project-modal" onKeyDown={(event) => {
+        if (event.key === "Escape" && !busy) onClose();
+        if (event.key === "Tab") {
+          const items = Array.from(dialog.current?.querySelectorAll<HTMLElement>("button:not(:disabled), input, textarea, select") ?? []);
+          const first = items[0], last = items.at(-1);
+          if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+          else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+        }
+      }} role="dialog" aria-modal="true" aria-labelledby="new-project-title">
         <div className="modal-header">
           <div><p className="eyebrow">New iteration</p><h2 id="new-project-title">What should the agent create?</h2></div>
-          <button className="icon-button" onClick={onClose} aria-label="Close"><X size={18} /></button>
+          <button className="icon-button" disabled={busy} onClick={onClose} aria-label="Close"><X size={18} /></button>
         </div>
 
         <div className="form-grid">
@@ -630,8 +690,8 @@ function ProjectModal({
         <div className="modal-footer">
           <p><ShieldCheck size={15} /> Media is generated remotely. DKG stores structured evidence and references.</p>
           <div>
-            <button className="secondary" onClick={onClose}>Cancel</button>
-            <button className="primary" disabled={busy || !form.title.trim() || !form.brief.trim()} onClick={onSubmit}>
+            <button className="secondary" disabled={busy} onClick={onClose}>Cancel</button>
+            <button className="primary" disabled={busy || !form.title.trim() || !form.brief.trim() || !form.successCriteria.some((item) => item.trim())} onClick={onSubmit}>
               {busy ? <LoaderCircle className="spin" size={17} /> : <ArrowRight size={17} />}
               Create project
             </button>
@@ -692,141 +752,6 @@ function MemoryVisual({ memory }: { memory: ImprovementMemoryKa }) {
     </div>
   );
 }
-function KnowledgeGraphVisual({ snapshot }: { snapshot: IterationSnapshot }) {
-  const runs = snapshot.runLedger["demo:hasAttempt"];
-  const observations = snapshot.improvementMemory["demo:hasObservation"];
-  const strategy = snapshot.improvementMemory["demo:hasStrategy"];
-
-  return (
-    <div className="kg-visual">
-      <div className="kg-heading">
-        <span><Network size={15} /> RDF relationship projection</span>
-        <small>{runs.length} runs - {observations.length} observations</small>
-      </div>
-
-      <GraphNode tone="target" kicker="Entity" title="Target" meta={shortId(snapshot.runLedger["demo:targetId"])} />
-      <GraphEdge label="is tracked by" />
-      <GraphNode tone="ledger" kicker="Knowledge Asset" title="Run Ledger" meta={shortId(snapshot.runLedger["@id"])} />
-
-      {runs.map((run, index) => {
-        const artifact = (run["demo:generatedArtifact"] ?? {}) as Record<string, unknown>;
-        const evaluation = (run["demo:hasEvaluation"] ?? {}) as Record<string, unknown>;
-        const memoryInputs = Array.isArray(run["demo:usedMemoryObservation"])
-          ? run["demo:usedMemoryObservation"] as Array<Record<string, unknown>>
-          : [];
-        return (
-          <section className="kg-run" key={String(run["@id"] ?? index)}>
-            <GraphEdge label="hasAttempt" />
-            <GraphNode
-              tone="run"
-              kicker="GenerationAttempt"
-              title={`Try ${String(run["demo:attemptNumber"])}`}
-              meta={`${String(run["demo:mediaType"])} - prompt ${String(run["demo:promptHash"]).slice(0, 9)}`}
-            />
-            <div className="kg-branches">
-              <div>
-                <GraphEdge label="generatedArtifact" compact />
-                <GraphNode
-                  tone="artifact"
-                  kicker="MediaArtifact"
-                  title="Output"
-                  meta={shortId(String(artifact["@id"] ?? ""))}
-                  compact
-                />
-              </div>
-              <div>
-                <GraphEdge label="hasEvaluation" compact />
-                <GraphNode
-                  tone="evaluation"
-                  kicker="BlindEvaluation"
-                  title={`${String(evaluation["demo:score"] ?? run["demo:score"])}/10`}
-                  meta={String(evaluation["demo:pass"] ?? run["demo:pass"]) === "true" ? "target reached" : "iterate"}
-                  compact
-                />
-              </div>
-            </div>
-            {memoryInputs.length > 0 && (
-              <div className="kg-memory-link">
-                <GraphEdge label={`usedMemoryObservation x${memoryInputs.length}`} compact />
-                <span>Only content fingerprints cross this run link.</span>
-              </div>
-            )}
-          </section>
-        );
-      })}
-
-      <GraphEdge label="updates" />
-      <GraphNode
-        tone="memory"
-        kicker="Knowledge Asset"
-        title="Improvement Memory"
-        meta={shortId(snapshot.improvementMemory["@id"])}
-      />
-
-      <div className="kg-observations">
-        {observations.map((observation, index) => {
-          const from = observation["demo:fromAttempt"]["@id"].split("/").at(-1) ?? "?";
-          return (
-            <div key={observation["@id"]}>
-              <GraphEdge label="hasObservation" compact />
-              <GraphNode
-                tone="observation"
-                kicker={`MemoryObservation - ${observation["demo:category"]}`}
-                title={observation["demo:body"]}
-                meta={`fromAttempt Try ${from} - ${observation["demo:relation"]}${observation["demo:criterionIndex"] !== undefined ? ` - criterion ${observation["demo:criterionIndex"] + 1}` : ""}`}
-                compact
-              />
-            </div>
-          );
-        })}
-      </div>
-
-      <GraphEdge label="hasStrategy" compact />
-      <GraphNode
-        tone="strategy"
-        kicker="PromptStrategy"
-        title={strategy["demo:body"]}
-        meta={strategy["demo:fromAttempt"] ? `fromAttempt Try ${strategy["demo:fromAttempt"]["@id"].split("/").at(-1)}` : "initial strategy"}
-        compact
-      />
-      <p className="kg-privacy"><ShieldCheck size={13} /> This visual projects the preserved run into the current RDF schema. New Tries persist these typed links; full prompts remain private.</p>
-    </div>
-  );
-}
-
-function GraphNode({
-  tone,
-  kicker,
-  title,
-  meta,
-  compact = false
-}: {
-  tone: string;
-  kicker: string;
-  title: string;
-  meta: string;
-  compact?: boolean;
-}) {
-  return (
-    <div className={`graph-node ${tone} ${compact ? "compact" : ""}`}>
-      <span>{kicker}</span>
-      <strong>{title}</strong>
-      <small>{meta}</small>
-    </div>
-  );
-}
-
-function GraphEdge({ label, compact = false }: { label: string; compact?: boolean }) {
-  return (
-    <div className={`graph-edge ${compact ? "compact" : ""}`}>
-      <i />
-      <span>{label}</span>
-      <ArrowRight size={11} />
-    </div>
-  );
-}
-
-
 function MemorySection({ title, items, empty, tone }: { title: string; items: string[]; empty: string; tone: string }) {
   return (
     <section className={`memory-section ${tone}`}>
@@ -853,8 +778,8 @@ function ChangesView({ current, previous }: { current: IterationSnapshot; previo
       </div>
       <ChangeLine label="Run Ledger" value={`+${current.runLedger["demo:hasAttempt"].length - (previous?.runLedger["demo:hasAttempt"].length ?? 0)} attempt`} tone="added" />
       {addedFailures.map((item) => <ChangeLine key={item} label="Failure added" value={item} tone="added" />)}
-      {removedFailures.map((item) => <ChangeLine key={item} label="Failure resolved" value={item} tone="removed" />)}
-      {addedPatterns.map((item) => <ChangeLine key={item} label="Pattern confirmed" value={item} tone="added" />)}
+      {removedFailures.map((item) => <ChangeLine key={item} label="Failure no longer listed" value={item} tone="removed" />)}
+      {addedPatterns.map((item) => <ChangeLine key={item} label="Observation added" value={item} tone="added" />)}
       <ChangeLine label="Strategy updated" value={currentMemory["demo:nextPromptStrategy"]} tone="changed" />
       {!addedFailures.length && !removedFailures.length && !addedPatterns.length && previous && (
         <p className="no-change">The structured fields are stable; this Try still adds a new immutable run record.</p>
@@ -871,16 +796,18 @@ function DkgStatus({ snapshot }: { snapshot: IterationSnapshot }) {
   const shared = snapshot.dkg.state === "shared";
   return (
     <span className={`dkg-status ${shared ? "shared" : snapshot.dkg.state}`}>
-      <span /> {shared ? `Shared - ${snapshot.dkg.layer}` : snapshot.dkg.state}
+      <span /> {snapshot.dkg.layer === "local" ? (shared ? "Local file demo" : "Recorded locally") : shared ? `Shared · ${snapshot.dkg.layer}` : snapshot.dkg.state}
     </span>
   );
 }
 
 function MediaPreview({ type, reference, title }: { type: MediaType; reference: string; title: string }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => { setFailed(false); }, [reference]);
   const url = mediaUrl(reference);
-  if (!url) return <div className="reference-only"><Film size={28} /><p>Output reference</p><code>{reference}</code></div>;
-  if (type === "image") return <img src={url} alt={`Generated artifact for ${title}`} />;
-  return <video src={url} controls playsInline aria-label={`Generated artifact for ${title}`} />;
+  if (!url || failed) return <div className="reference-only"><Film size={28} /><p>{failed ? "Preview unavailable" : "Output reference"}</p><small>{failed ? "The media link may have expired or the format may not play in this browser." : "This run returned a reference without a browser preview."}</small>{url && <a href={url} className="secondary" target="_blank" rel="noreferrer">Open original output <ExternalLink size={14} /></a>}</div>;
+  if (type === "image") return <img src={url} alt={`Generated artifact for ${title}`} onError={() => setFailed(true)} />;
+  return <video key={url} src={url} controls playsInline preload="metadata" onError={() => setFailed(true)} aria-label={`Generated artifact for ${title}`} />;
 }
 
 function MediaGlyph({ type }: { type: MediaType }) {

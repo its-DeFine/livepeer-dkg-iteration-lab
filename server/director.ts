@@ -516,10 +516,14 @@ function normalizeProject(input: Partial<DemoState> & Pick<DemoState, "target" |
         ? memoryValues(previousMemory)
         : [];
     const reconstructedPrompt = buildPrompt(target, memoryUsed, attempt.attemptNumber);
-    const promptText = typeof attempt.promptText === "string" && attempt.promptText.trim()
+    const storedPromptText = typeof attempt.promptText === "string" && attempt.promptText.trim()
       ? attempt.promptText
-      : attempt.promptPreview || reconstructedPrompt;
-    const promptHash = attempt.promptHash || hashValue(promptText);
+      : undefined;
+    const promptText = storedPromptText || attempt.promptPreview || reconstructedPrompt;
+    const storedPromptHash = typeof attempt.promptHash === "string" && attempt.promptHash.trim()
+      ? attempt.promptHash.trim()
+      : undefined;
+    const promptHash = storedPromptHash || hashValue(promptText);
     const knowledgeObservations = normalizeKnowledgeObservations(attempt, target.targetScore);
     const latestObservation = sanitizeDkgMemoryText(attempt.judgeOutputSummary);
     const normalized: AttemptRecord = {
@@ -527,7 +531,12 @@ function normalizeProject(input: Partial<DemoState> & Pick<DemoState, "target" |
       promptSummary: describePrompt(target, memoryUsed, attempt.attemptNumber),
       promptHash,
       promptText,
-      promptTextVerified: hashValue(promptText) === promptHash,
+      promptTextVerified: Boolean(
+        attempt.promptTextVerified !== false &&
+        storedPromptText &&
+        storedPromptHash &&
+        hashValue(storedPromptText) === storedPromptHash
+      ),
       userDirectionApplied: Boolean(attempt.userDirectionApplied),
       memoryUsed,
       knowledgeObservations,
@@ -585,23 +594,23 @@ function normalizeProject(input: Partial<DemoState> & Pick<DemoState, "target" |
       receipt: {} as SubmissionReceipt,
       updatedAt: snapshot.capturedAt
     } as DemoState;
-    const isLatest = index === sourceSnapshots.length - 1;
-    const legacyShared = isLatest && input.receipt?.runLedgerReference?.startsWith("dkg:");
+    const preservedRunLedger = snapshot.runLedger && typeof snapshot.runLedger === "object"
+      ? snapshot.runLedger
+      : safeRunLedger;
+    const preservedImprovementMemory = snapshot.improvementMemory && typeof snapshot.improvementMemory === "object"
+      ? snapshot.improvementMemory
+      : safeImprovementMemory;
     return {
       ...snapshot,
-      runLedger: safeRunLedger,
-      improvementMemory: safeImprovementMemory,
-      runLedgerRdf: buildRunLedgerTurtle(snapshotState),
-      improvementMemoryRdf: buildImprovementMemoryTurtle(snapshotState),
-      dkg: snapshot.dkg || (legacyShared
-        ? {
-            state: "shared" as const,
-            layer: "SWM" as const,
-            runLedgerReference: input.receipt?.runLedgerReference,
-            improvementMemoryReference: input.receipt?.improvementMemoryReference,
-            recordedAt: snapshot.capturedAt
-          }
-        : { state: "recorded" as const, layer: "local" as const })
+      runLedger: preservedRunLedger,
+      improvementMemory: preservedImprovementMemory,
+      runLedgerRdf: typeof snapshot.runLedgerRdf === "string" && snapshot.runLedgerRdf
+        ? snapshot.runLedgerRdf
+        : buildRunLedgerTurtle(snapshotState),
+      improvementMemoryRdf: typeof snapshot.improvementMemoryRdf === "string" && snapshot.improvementMemoryRdf
+        ? snapshot.improvementMemoryRdf
+        : buildImprovementMemoryTurtle(snapshotState),
+      dkg: snapshot.dkg || { state: "recorded" as const, layer: "local" as const }
     };
   });
   const receipt = buildReceipt(projectId, target, attempts, runLedger, improvementMemory);

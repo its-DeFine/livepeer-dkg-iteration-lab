@@ -176,18 +176,35 @@ export class DkgCliAdapter implements DkgAdapter {
 
     const query = `PREFIX il: <https://atumera.com/hackathon/iteration-lab#>
 SELECT DISTINCT ?body WHERE {
-  VALUES (?target ?sourceAttempt) {
+  VALUES (?target ?latestAttempt) {
     (${targetIri(state)} ${attemptIri(state, latest)})
     (${legacyTargetIri(state)} ${legacyAttemptIri(state, latest)})
   }
-  ?thing il:forTarget ?target ;
-    il:fromAttempt ?sourceAttempt ;
-    il:body ?body .
+  {
+    ?thing a il:MemoryObservation ;
+      il:forTarget ?target ;
+      il:fromAttempt ?sourceAttempt ;
+      il:category ?category ;
+      il:body ?body .
+    FILTER (
+      ?category = "success" || ?category = "style" ||
+      (?sourceAttempt = ?latestAttempt &&
+        (?category = "failure" || ?category = "constraint" ||
+          ?category = "knownFailure" || ?category = "successfulPattern"))
+    )
+  }
+  UNION
+  {
+    ?thing a il:PromptStrategy ;
+      il:forTarget ?target ;
+      il:fromAttempt ?latestAttempt ;
+      il:body ?body .
+  }
 }`;
 
     const output = await this.run(["query", contextGraphId, "--include-shared-memory", "--sparql", query]);
-    const parsed = JSON.parse(output) as { bindings?: Array<{ body?: string }> };
-    const values = (parsed.bindings ?? []).map((binding) => parseSparqlLiteral(binding.body ?? ""));
+    const parsed = JSON.parse(output) as { bindings?: Array<{ body?: unknown }> };
+    const values = (parsed.bindings ?? []).map((binding) => parseSparqlBinding(binding.body)).filter(Boolean);
     return sanitizeMemoryValues(values);
   }
 
@@ -259,6 +276,13 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function parseSparqlBinding(value: unknown): string {
+  if (typeof value === "string") return parseSparqlLiteral(value);
+  if (value && typeof value === "object" && "value" in value) {
+    return parseSparqlBinding((value as { value?: unknown }).value);
+  }
+  return "";
+}
 function parseSparqlLiteral(value: string): string {
   const quote = String.fromCharCode(34);
   const slash = String.fromCharCode(92);

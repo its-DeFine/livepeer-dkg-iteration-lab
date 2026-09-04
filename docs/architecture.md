@@ -29,5 +29,16 @@ Livepeer should remain the media execution layer. DKG should not be used as bulk
 - [x] The UI shows running phases, durable failures, each artifact, and both Knowledge Asset snapshots per Try.
 - [x] A DKG-assisted Try shows the sanitized observations actually used and a fingerprint of the newly composed prompt.
 - [x] The blind judge receives only the target criteria and artifact.
-- [x] Shared Knowledge Assets omit target text, criteria text, avoid text, prompt text, personal data, and secrets.
+- [x] New shared Knowledge Assets omit raw target, criteria, avoid, and prompt text. Summary sanitization strips known sensitive patterns; it is not a guarantee that arbitrary personal information is detected.
 - [x] Each DKG snapshot uses an immutable session-and-Try-scoped asset name and is verified by readback.
+
+## Workshop workspace acceptance
+
+- [x] Artifact-first layout with previous-Try comparison and explicit unavailable-preview recovery.
+- [x] Per-project creative-direction drafts survive project switching; late responses do not change the selected project.
+- [x] Full prompts are readable and copyable in the private workspace; historical prompts without original fingerprint evidence are labeled unverified.
+- [x] The graph explorer follows explicit JSON-LD object relationships; it does not invent links. RDF/Turtle is separately inspectable.
+- [x] Keyboard-accessible project dialog, visible mobile project picker, and responsive inspector.
+- [x] Browser acceptance covers new project, two mock iterations, custom direction, memory readback, comparison, RDF, graph navigation, and mobile layout.
+
+Scores are model judgments, not proof that memory always improves a result. The Director currently composes prompts from the target, creative direction, and selected graph observations; graph structure follows the application schema rather than an unconstrained LLM-designed ontology.

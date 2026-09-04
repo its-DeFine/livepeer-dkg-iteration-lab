@@ -1,9 +1,11 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDirector } from "./director.js";
 import { buildJudgePrompt } from "./adapters/judge.js";
+import { DkgCliAdapter } from "./adapters/dkg.js";
+import { JsonStateStore } from "./storage.js";
 import { supportedMediaProfiles } from "./adapters/livepeer.js";
 
 describe("Director workspace", () => {
@@ -176,6 +178,8 @@ describe("Director workspace", () => {
       delete attempt.generationCapability;
       attempt.promptPreview = "legacy private prompt owner@example.com";
       delete attempt.promptHash;
+      delete attempt.promptText;
+      delete attempt.promptTextVerified;
       delete attempt.memoryUsed;
     }
     const migrationDir = await mkdtemp(path.join(tmpdir(), "iteration-lab-legacy-"));
@@ -187,6 +191,10 @@ describe("Director workspace", () => {
     expect(migrated.projects[0].iterationSnapshots[0].runLedgerRdf).toContain("il:LivepeerRun");
     expect(migrated.projects[0].attempts[0].promptHash).toMatch(/^[a-f0-9]{64}$/);
     expect(Object.hasOwn(migrated.projects[0].attempts[0], "promptPreview")).toBe(false);
+    expect(migrated.projects[0].attempts[0].promptTextVerified).toBe(false);
+    await createDirector(migrationDir).selectProject(migrated.activeProjectId);
+    const roundtrip = await createDirector(migrationDir).getWorkspace();
+    expect(roundtrip.projects[0].attempts[0].promptTextVerified).toBe(false);
     expect(JSON.stringify(migrated.projects[0].runLedger)).not.toContain("legacy private prompt");
   });
 
@@ -208,6 +216,56 @@ describe("Director workspace", () => {
     expect(project.iterationSnapshots[0].dkg.state).toBe("failed");
     expect(project.attempts[0].judgeScope).toBe("blind-artifact");
     expect(project.receipt.outputReferences).toHaveLength(1);
+  });
+
+
+  it("preserves captured asset projections and never infers sharing from a receipt", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "iteration-lab-history-"));
+    const director = createDirector(dataDir);
+    const initial = await director.getWorkspace();
+    await director.runAttempt({ projectId: initial.activeProjectId, useDkgMemory: false });
+    const file = path.join(dataDir, "workspace-state.json");
+    const saved = JSON.parse(await readFile(file, "utf8"));
+    const snapshot = saved.projects[0].iterationSnapshots[0];
+    snapshot.runLedger["demo:historicalMarker"] = "Captured original ledger";
+    snapshot.improvementMemory["demo:nextPromptStrategy"] = "Captured original strategy";
+    snapshot.runLedgerRdf = "# captured ledger RDF\n";
+    snapshot.improvementMemoryRdf = "# captured memory RDF\n";
+    delete snapshot.dkg;
+    saved.projects[0].receipt.runLedgerReference = "dkg:receipt-is-not-proof";
+    await writeFile(file, JSON.stringify(saved));
+    const loaded = await director.getWorkspace();
+    const captured = loaded.projects[0].iterationSnapshots[0];
+    expect(captured.runLedger).toEqual(snapshot.runLedger);
+    expect(captured.improvementMemory).toEqual(snapshot.improvementMemory);
+    expect(captured.runLedgerRdf).toBe(snapshot.runLedgerRdf);
+    expect(captured.improvementMemoryRdf).toBe(snapshot.improvementMemoryRdf);
+    expect(captured.dkg).toEqual({ state: "recorded", layer: "local" });
+    await director.runAttempt({ projectId: initial.activeProjectId, useDkgMemory: true });
+    const after = await director.getWorkspace();
+    expect(after.projects[0].iterationSnapshots[0]).toEqual(captured);
+  });
+
+  it("queries reusable graph categories and reads typed SPARQL values", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "iteration-lab-query-"));
+    const director = createDirector(dataDir);
+    const initial = await director.getWorkspace();
+    const result = await director.runAttempt({ projectId: initial.activeProjectId, useDkgMemory: false });
+    const adapter = new DkgCliAdapter(new JsonStateStore(dataDir), "unused", "test-context", "", "ledger", "memory");
+    const run = vi.spyOn(adapter as unknown as { run(args: string[]): Promise<string> }, "run").mockResolvedValue(JSON.stringify({
+      bindings: [{ body: { type: "literal", value: "Preserve the clear silhouette." } }, { body: "Use a simpler final frame." }]
+    }));
+    const memory = await adapter.readMemory(result.state);
+    expect(memory).toEqual(["Preserve the clear silhouette.", "Use a simpler final frame."]);
+    const args = run.mock.calls[0][0];
+    expect(args).toContain("--include-shared-memory");
+    const query = args[args.indexOf("--sparql") + 1];
+    expect(query).toContain('?category = "success"');
+    expect(query).toContain('?category = "style"');
+    expect(query).toContain("?sourceAttempt = ?latestAttempt");
+    expect(query).toContain("il:PromptStrategy");
+    expect(query).not.toContain(result.attempt.promptText);
+    run.mockRestore();
   });
 
   it("persists a visible failed job when remote generation cannot start", async () => {

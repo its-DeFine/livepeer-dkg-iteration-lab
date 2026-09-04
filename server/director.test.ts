@@ -20,5 +20,9 @@ describe("Director improvement loop", () => {
 
     const ledger = await readFile(path.join(dataDir, "run-ledger-ka.jsonld"), "utf8");
     expect(ledger).toContain("demo:RunLedger");
+    expect(second.state.receipt.runLedgerReference).toContain("run-ledger-ka.jsonld");
+
+    const receipt = await readFile(path.join(dataDir, "submission-receipt.json"), "utf8");
+    expect(receipt).toContain("run-ledger-ka.jsonld");
   });
 });

@@ -1,6 +1,6 @@
 # Livepeer DKG Iteration Lab
 
-A starter app for the Livepeer Agent Hackathon.
+A working demo app for the Livepeer Agent Hackathon.
 
 The app demonstrates a simple agent loop:
 
@@ -21,16 +21,19 @@ npm run dev
 
 Open `http://localhost:8080`.
 
-The default mode is mock mode. It does not need Livepeer credentials, DKG credentials, private keys, or a running DKG node.
+The checked-in Docker configuration uses real mode: Livepeer raw MCP plus a local DKG edge node. For local development without DKG, set `LIVEPEER_MODE=mock` and `DKG_MODE=file` in `.env`.
 
 ## Run With Docker
 
 ```bash
 cp .env.example .env
+./scripts/init-dkg-volume.sh
 docker compose up --build
 ```
 
 Open `http://localhost:8787`.
+
+The init script creates a local DKG home in the `iteration-lab-dkg-home` Docker volume. The node uses DKG local / Shared Working Memory for the demo. It does not publish to Verifiable Memory unless you explicitly run a publish command later.
 
 ## Knowledge Assets
 
@@ -53,38 +56,40 @@ Improvement Memory Knowledge Asset:
 - what style anchors should be reused
 - what the next prompt should try
 
-The mock DKG adapter writes JSON-LD files into the app data directory:
+The app writes reviewable JSON snapshots and RDF/Turtle payloads into the app data directory:
 
 - `run-ledger-ka.jsonld`
 - `improvement-memory-ka.jsonld`
+- `run-ledger-ka.ttl`
+- `improvement-memory-ka.ttl`
 - `submission-receipt.json`
 
 ## Real Integrations
 
-Mock mode is the reliable onboarding path. Real integrations are intentionally behind explicit configuration.
+The Docker path is configured for real integrations.
 
 Livepeer:
 
 - Set `LIVEPEER_MODE=real`.
-- Set `LIVEPEER_MCP_URL`.
-- Optionally set `LIVEPEER_MCP_TOOL`.
+- Set `LIVEPEER_MCP_URL=https://agent.livepeer.org/api/mcp`.
+- Set `LIVEPEER_CAPABILITY` to an available capability, for example `flux-schnell`.
+- The app calls the remote Livepeer raw MCP surface. It does not run Livepeer capabilities, models, renderers, or LiveBridge components locally.
 - Keep bearer tokens in the runtime environment, never in Git.
 
 DKG:
 
-- Use `DKG_MODE=file` for the starter flow.
-- Use `DKG_MODE=cli` when the DKG CLI is installed in the runtime.
-- Set `DKG_CONTEXT_GRAPH_ID` to an existing Context Graph ID.
-- The CLI adapter writes `run-ledger` and `improvement-memory` Knowledge Assets and shares them to Shared Working Memory.
-- Publish a final receipt to Verifiable Memory only when testnet/mainnet wallet setup is ready.
+- Use `DKG_MODE=cli` in Docker.
+- Run `./scripts/init-dkg-volume.sh` once to initialize the local DKG home volume.
+- Set `DKG_CONTEXT_GRAPH_NAME` to a short demo graph name. The app resolves or creates the full Context Graph ID.
+- The CLI adapter writes `iteration-lab-run-ledger` and `iteration-lab-improvement-memory` Knowledge Assets and shares them to Shared Working Memory.
+- Publish to Verifiable Memory only when finality is useful and wallet/network setup is ready.
 
 ## DKG CLI Shape
 
 ```bash
-dkg context-graph create livepeer-dkg-iteration-lab
-dkg ka create run-ledger -c "$CG" --input-file ./run-ledger-ka.jsonld --share
-dkg ka create improvement-memory -c "$CG" --input-file ./improvement-memory-ka.jsonld --share
-dkg ka query run-ledger -c "$CG"
+dkg context-graph create iteration-lab-demo
+dkg ka create iteration-lab-run-ledger -c "$CG" --input-file ./run-ledger-ka.ttl --share
+dkg query "$CG" --include-shared-memory --file ./readback.sparql
 ```
 
 Publish to Verifiable Memory only when finality is useful and the wallet/network setup is ready.

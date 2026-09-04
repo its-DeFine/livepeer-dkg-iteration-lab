@@ -8,7 +8,10 @@ services:
       - .env
     volumes:
       - iteration-lab-data:/app/data
+      - iteration-lab-dkg-home:/dkg-home
     restart: unless-stopped
 
 volumes:
   iteration-lab-data:
+  iteration-lab-dkg-home:
+    name: iteration-lab-dkg-home

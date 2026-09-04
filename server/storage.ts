@@ -30,4 +30,11 @@ export class JsonStateStore {
     await writeFile(filePath, JSON.stringify(value, null, 2));
     return filePath;
   }
+
+  async writeText(name: string, value: string): Promise<string> {
+    await mkdir(this.dataDir, { recursive: true });
+    const filePath = path.join(this.dataDir, name);
+    await writeFile(filePath, value);
+    return filePath;
+  }
 }

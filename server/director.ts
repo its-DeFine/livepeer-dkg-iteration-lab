@@ -43,7 +43,7 @@ export function createDirector(dataDir: string) {
     const current = await getState();
     const target = request.target ?? current.target;
     const attemptNumber = current.target.id === target.id ? current.attempts.length + 1 : 1;
-    const memoryUsed = request.useDkgMemory ? selectMemory(current.improvementMemory) : [];
+    const memoryUsed = request.useDkgMemory ? await dkg.readMemory(current) : [];
     const prompt = buildPrompt(target, memoryUsed, attemptNumber);
     const media = await livepeer.generate({ attemptNumber, prompt, target });
     const judge = judgeAttempt(attemptNumber, request.useDkgMemory, current.improvementMemory);
@@ -80,8 +80,11 @@ export function createDirector(dataDir: string) {
   }
 
   async function persist(state: DemoState): Promise<void> {
+    const references = await dkg.writeState(state);
+    state.receipt.runLedgerReference = references.runLedgerReference;
+    state.receipt.improvementMemoryReference = references.improvementMemoryReference;
     await store.write(state);
-    await dkg.writeState(state);
+    await store.writeJson("submission-receipt.json", state.receipt);
   }
 
   return {
@@ -97,8 +100,9 @@ function getConfig(): ConfigStatus {
     livepeerMode: process.env.LIVEPEER_MODE === "real" ? "real" : "mock",
     dkgMode: process.env.DKG_MODE === "cli" ? "cli" : "file",
     judgeMode: process.env.JUDGE_MODE === "real" ? "real" : "mock",
-    livepeerConfigured: Boolean(process.env.LIVEPEER_MCP_URL),
-    dkgConfigured: Boolean(process.env.DKG_CONTEXT_GRAPH_ID)
+    livepeerConfigured: process.env.LIVEPEER_MODE === "real" ? Boolean(process.env.LIVEPEER_MCP_URL) : true,
+    dkgConfigured:
+      process.env.DKG_MODE === "cli" ? Boolean(process.env.DKG_CONTEXT_GRAPH_ID || process.env.DKG_CONTEXT_GRAPH_NAME) : true
   };
 }
 

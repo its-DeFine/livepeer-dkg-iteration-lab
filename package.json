@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": false,
   "type": "module",
-  "description": "Starter app showing a Livepeer Agent improvement loop with DKG-backed run evidence and improvement memory.",
+  "description": "Working app showing a Livepeer Agent improvement loop with DKG-backed run evidence and improvement memory.",
   "scripts": {
     "dev": "tsx server/index.ts",
     "build": "vite build && tsc -p tsconfig.server.json",

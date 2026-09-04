@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createDirector } from "./director.js";
+import { buildJudgePrompt } from "./adapters/judge.js";
 
 describe("Director improvement loop", () => {
   beforeEach(() => {
@@ -11,17 +12,18 @@ describe("Director improvement loop", () => {
     process.env.JUDGE_MODE = "mock";
   });
 
-  it("records attempts and improves when DKG memory is used", async () => {
+  it("records attempts and snapshots while keeping the judge blind to orchestration context", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "iteration-lab-"));
     const director = createDirector(dataDir);
 
     const first = await director.runAttempt({ useDkgMemory: false });
     const second = await director.runAttempt({ useDkgMemory: true });
 
-    expect(first.attempt.score).toBe(3);
-    expect(second.attempt.score).toBeGreaterThan(first.attempt.score);
+    expect(first.attempt.score).toBeGreaterThanOrEqual(4);
+    expect(second.attempt.score).toBeGreaterThanOrEqual(4);
     expect(second.attempt.usedDkgMemory).toBe(true);
     expect(second.attempt.judgeReference).toContain("mock:judge");
+    expect(second.attempt.judgeScope).toBe("blind-artifact");
     expect(second.state.sessionId).toContain("session-");
     expect(second.state.runLedger["demo:hasAttempt"]).toHaveLength(2);
     expect(second.state.improvementMemory["demo:latestScore"]).toBe(second.attempt.score);
@@ -37,5 +39,17 @@ describe("Director improvement loop", () => {
 
     const receipt = await readFile(path.join(dataDir, "submission-receipt.json"), "utf8");
     expect(receipt).toContain("run-ledger-ka.jsonld");
+    const judgePrompt = buildJudgePrompt({
+      target: first.state.target,
+      media: {
+        outputReference: first.attempt.outputReference,
+        outputHash: first.attempt.outputHash ?? ""
+      }
+    });
+    expect(judgePrompt).not.toContain("DKG");
+    expect(judgePrompt).not.toContain("memory");
+    expect(judgePrompt).not.toContain("Attempt number");
+    expect(judgePrompt).not.toContain("Prompt sent");
+    expect(judgePrompt).not.toContain(first.attempt.outputReference);
   });
 });

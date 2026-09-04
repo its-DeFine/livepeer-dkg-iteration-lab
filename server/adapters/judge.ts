@@ -1,15 +1,10 @@
 import crypto from "node:crypto";
-import type { ImprovementMemoryKa, TargetSpec } from "../../shared/types.js";
+import type { TargetSpec } from "../../shared/types.js";
 import type { GenerateMediaOutput } from "./livepeer.js";
 
 export interface JudgeInput {
-  attemptNumber: number;
-  usedDkgMemory: boolean;
-  memoryUsed: string[];
-  prompt: string;
   target: TargetSpec;
   media: GenerateMediaOutput;
-  improvementMemory: ImprovementMemoryKa;
 }
 
 export interface JudgeOutput {
@@ -24,22 +19,12 @@ export interface JudgeAdapter {
 
 export class MockJudgeAdapter implements JudgeAdapter {
   async judge(input: JudgeInput): Promise<JudgeOutput> {
-    if (input.attemptNumber === 1 || !input.usedDkgMemory) {
-      return {
-        score: 3,
-        feedback:
-          "The output has a usable cinematic direction, but the product is not explicit enough and the ending frame is not yet clean.",
-        reference: "mock:judge:first-pass"
-      };
-    }
-
-    const priorScore = input.improvementMemory["demo:latestScore"] || 3;
-    const score = Math.min(9, priorScore + 3);
+    const score = 4 + (Number.parseInt(input.media.outputHash.slice(0, 2), 16) % 5);
     const feedback =
-      score >= 8
-        ? "The output now preserves the cinematic tone, makes the product clearer, and gives the final frame a stronger thumbnail shape."
-        : "The output improves product visibility and tone, but the final frame still needs a clearer ending composition.";
-    return { score, feedback, reference: "mock:judge:dkg-memory-pass" };
+      score >= 7
+        ? "The artifact satisfies most visible criteria, with a clear subject, cinematic tone, and a usable composition."
+        : "The artifact has a usable direction, but visible product clarity and the final composition need improvement.";
+    return { score, feedback, reference: "mock:judge:blind-artifact" };
   }
 }
 
@@ -64,7 +49,7 @@ export class LivepeerJudgeAdapter implements JudgeAdapter {
     const judgePrompt = buildJudgePrompt(input);
     const idempotencySeed = crypto
       .createHash("sha256")
-      .update([input.target.id, input.attemptNumber, input.media.outputHash, judgePrompt].join(":"))
+      .update([input.target.id, input.media.outputHash, judgePrompt].join(":"))
       .digest("hex")
       .slice(0, 40);
 
@@ -77,7 +62,7 @@ export class LivepeerJudgeAdapter implements JudgeAdapter {
         timeout: this.timeoutSeconds,
         async: false,
         persist: false,
-        session_id: "iteration_lab_judge_" + safeId(input.target.id),
+        session_id: "iteration_lab_blind_judge_" + safeId(input.target.id),
         idempotency_key: "il_judge_" + idempotencySeed
       }
     });
@@ -149,30 +134,22 @@ export class LivepeerJudgeAdapter implements JudgeAdapter {
   }
 }
 
-function buildJudgePrompt(input: JudgeInput): string {
-  const memorySection = input.memoryUsed.length
-    ? input.memoryUsed.map((item, index) => String(index + 1) + ". " + item).join("\n")
-    : "No DKG memory was used for this attempt.";
-
+export function buildJudgePrompt(input: JudgeInput): string {
   return [
-    "You are the LLM judge for a public Livepeer + DKG hackathon demo.",
-    "Evaluate the iteration evidence and the generated media reference against the target brief.",
+    "You are an independent media quality judge.",
+    "Evaluate only the supplied media artifact against the target brief and visible success criteria.",
+    "Do not infer or evaluate how the artifact was generated, its provenance, prior runs, or hidden context.",
     "Return only compact JSON with this exact shape: {\"score\":number,\"feedback\":string}.",
     "Scoring rubric:",
-    "- 1-4: first/blind attempt, weak product clarity, or no useful memory application.",
-    "- 5-7: useful output direction and DKG memory was applied, but the result still needs improvement.",
-    "- 8-10: DKG memory clearly improved the prompt and the output is likely ready against the criteria.",
-    "Keep feedback to one sentence. Do not mention local computers, paths, credentials, or auth setup.",
+    "- 1-3: the visible artifact misses most criteria.",
+    "- 4-6: the visible artifact partially satisfies the criteria but has major shortcomings.",
+    "- 7-8: the visible artifact satisfies the criteria with minor shortcomings.",
+    "- 9-10: the visible artifact satisfies the criteria exceptionally well.",
+    "Keep feedback to one sentence and discuss only qualities visible in the artifact.",
     "Target title: " + input.target.title,
     "Target brief: " + input.target.brief,
     "Success criteria: " + input.target.successCriteria.join(" | "),
-    "Avoid: " + input.target.avoid.join(" | "),
-    "Attempt number: " + input.attemptNumber,
-    "Used DKG memory: " + String(input.usedDkgMemory),
-    "DKG memory facts used:\n" + memorySection,
-    "Prompt sent to Livepeer:\n" + input.prompt,
-    "Livepeer output reference: " + input.media.outputReference,
-    "Livepeer output hash: " + input.media.outputHash
+    "Avoid: " + input.target.avoid.join(" | ")
   ].join("\n");
 }
 

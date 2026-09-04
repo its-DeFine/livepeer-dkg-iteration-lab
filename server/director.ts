@@ -61,17 +61,13 @@ export function createDirector(dataDir: string) {
     const prompt = buildPrompt(target, memoryUsed, attemptNumber);
     const media = await livepeer.generate({ attemptNumber, prompt, target });
     const judgment = await judge.judge({
-      attemptNumber,
-      usedDkgMemory: request.useDkgMemory,
-      memoryUsed,
-      prompt,
       target,
-      media,
-      improvementMemory: current.improvementMemory
+      media
     });
 
     const attempt: AttemptRecord = {
       id: `${target.id}-attempt-${attemptNumber}`,
+      judgeScope: "blind-artifact",
       attemptNumber,
       promptSummary: summarizePrompt(prompt),
       promptPreview: prompt,
@@ -228,6 +224,7 @@ function buildRunLedger(sessionId: string, target: TargetSpec, attempts: Attempt
       "demo:pass": attempt.pass,
       "demo:judgeOutputSummary": attempt.judgeOutputSummary,
       "demo:judgeReference": attempt.judgeReference,
+      "demo:judgeScope": attempt.judgeScope,
       "demo:createdAt": attempt.createdAt
     }))
   };

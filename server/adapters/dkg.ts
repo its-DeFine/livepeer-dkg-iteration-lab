@@ -342,6 +342,7 @@ function attemptTurtle(state: DemoState, attempt: AttemptRecord): string {
     `  il:passedTarget ${attempt.pass ? "true" : "false"} ;`,
     `  il:judgeOutput ${literal(attempt.judgeOutputSummary)} ;`,
     `  il:judgeReference ${literal(attempt.judgeReference ?? "")} ;`,
+    `  il:judgeScope ${literal(attempt.judgeScope ?? "previous-evaluation")} ;`,
     `  il:createdAt ${dateTimeLiteral(attempt.createdAt)} .`
   ].join("\n");
 }

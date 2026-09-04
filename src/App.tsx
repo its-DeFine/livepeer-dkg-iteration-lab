@@ -44,8 +44,8 @@ const stageCards = [
   {
     icon: <ShieldCheck size={18} />,
     label: "3. Judge",
-    title: "Score the attempt",
-    body: "A remote Livepeer-backed judge returns compact feedback and a score that can be stored as evidence."
+    title: "Judge the artifact blind",
+    body: "The judge sees only the artifact and target criteria—not prompts, DKG memory, prior runs, or orchestration context."
   },
   {
     icon: <Database size={18} />,
@@ -70,8 +70,10 @@ export function App() {
   async function loadInitialState() {
     setError(null);
     const [stateResponse, configResponse] = await Promise.all([fetch("/api/state"), fetch("/api/config")]);
-    setState(await stateResponse.json());
+    const loadedState = (await stateResponse.json()) as DemoState;
+    setState(loadedState);
     setConfig(await configResponse.json());
+    setSelectedIteration(loadedState.iterationSnapshots.at(-1)?.attemptNumber ?? "current");
   }
 
   async function runAttempt(useDkgMemory: boolean) {
@@ -90,7 +92,7 @@ export function App() {
       const payload = (await response.json()) as RunAttemptResponse;
       setState(payload.state);
       setMemoryUsed(payload.memoryUsed);
-      setSelectedIteration("current");
+      setSelectedIteration(payload.attempt.attemptNumber);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Attempt failed.");
     } finally {
@@ -110,19 +112,11 @@ export function App() {
       setLoading(false);
     }
   }
-
-  const bestAttempt = useMemo(() => {
-    if (!state?.attempts.length) {
-      return null;
-    }
-    return state.attempts.reduce((best, attempt) => (attempt.score > best.score ? attempt : best), state.attempts[0]);
-  }, [state]);
-
   const iterationView = useMemo(() => {
     if (!state || selectedIteration === "current") {
       return state
         ? {
-            label: "Current state",
+            label: "Before first run",
             attempt: state.attempts.at(-1) ?? null,
             runLedger: state.runLedger,
             improvementMemory: state.improvementMemory
@@ -140,6 +134,26 @@ export function App() {
         }
       : null;
   }, [selectedIteration, state]);
+
+  const orchestratorMemory = useMemo(() => {
+    if (memoryUsed.length) {
+      return memoryUsed;
+    }
+    const attempt = iterationView?.attempt;
+    if (!state || !attempt?.usedDkgMemory) {
+      return [];
+    }
+    const previousMemory = state.iterationSnapshots.find(
+      (snapshot) => snapshot.attemptNumber === attempt.attemptNumber - 1
+    )?.improvementMemory;
+    return previousMemory
+      ? [
+          ...previousMemory["demo:knownFailure"],
+          ...previousMemory["demo:successfulPattern"],
+          previousMemory["demo:nextPromptStrategy"]
+        ].filter(Boolean)
+      : [];
+  }, [iterationView, memoryUsed, state]);
 
   if (!state) {
     return (
@@ -163,7 +177,7 @@ export function App() {
         <div className="status-row" aria-label="Integration status">
           <StatusPill label="Livepeer gen" value={config?.livepeerMode ?? "mock"} active={config?.livepeerConfigured} />
           <StatusPill label="DKG edge" value={config?.dkgMode ?? "file"} active={config?.dkgConfigured} />
-          <StatusPill label="LLM judge" value={config?.judgeMode ?? "mock"} active={config?.judgeConfigured} />
+          <StatusPill label="Blind judge" value={config?.judgeMode ?? "mock"} active={config?.judgeConfigured} />
         </div>
       </section>
 
@@ -171,9 +185,64 @@ export function App() {
       {loading ? (
         <div className="run-banner">
           <Loader2 className="spin" size={16} />
-          Calling remote Livepeer, evaluating the output, and writing the DKG memory assets.
+          Generating the artifact, running an isolated evaluation, and writing the DKG memory assets.
         </div>
       ) : null}
+
+      <Panel className="history-panel" icon={<History size={18} />} title="Iteration gallery">
+        <div className="history-heading">
+          <div>
+            <p className="history-kicker">Compare every completed run</p>
+            <h2>Artifact and knowledge state, side by side</h2>
+            <p>
+              Pick Try 1, Try 2, or any later run. The artifact and both knowledge-asset snapshots change together.
+            </p>
+          </div>
+          <div className="isolation-note">
+            <ShieldCheck size={18} />
+            <span>
+              <strong>Blind judge</strong>
+              Artifact + target criteria only
+            </span>
+          </div>
+        </div>
+
+        <div className="iteration-tabs" role="tablist" aria-label="Choose an iteration">
+          {state.iterationSnapshots.length ? (
+            state.iterationSnapshots.map((snapshot) => {
+              const attempt = state.attempts.find((item) => item.id === snapshot.attemptId);
+              return (
+                <button
+                  className={selectedIteration === snapshot.attemptNumber ? "iteration-tab active" : "iteration-tab"}
+                  key={snapshot.attemptNumber}
+                  onClick={() => setSelectedIteration(snapshot.attemptNumber)}
+                  role="tab"
+                  aria-selected={selectedIteration === snapshot.attemptNumber}
+                >
+                  <img src={snapshot.artifactReference} alt="" />
+                  <span>
+                    <strong>Try {snapshot.attemptNumber}</strong>
+                    <small>
+                      {snapshot.improvementMemory["demo:latestScore"]}/10 · {attempt?.usedDkgMemory ? "DKG memory" : "Target only"}
+                    </small>
+                  </span>
+                </button>
+              );
+            })
+          ) : (
+            <span className="no-iterations">Run the first attempt to start the gallery.</span>
+          )}
+        </div>
+
+        {iterationView ? (
+          <IterationInspector
+            label={iterationView.label}
+            attempt={iterationView.attempt}
+            runLedger={iterationView.runLedger}
+            improvementMemory={iterationView.improvementMemory}
+          />
+        ) : null}
+      </Panel>
 
       <section className="stage-strip" aria-label="Demo flow">
         {stageCards.map((stage) => (
@@ -226,45 +295,6 @@ export function App() {
           <ScoreStrip attempts={state.attempts} targetScore={state.target.targetScore} />
         </Panel>
 
-        <Panel className="history-panel" icon={<History size={18} />} title="Artifact + knowledge asset history">
-          <div className="history-heading">
-            <p>
-              The same two knowledge assets evolve after every run. Select an iteration to inspect its artifact and
-              the exact JSON-LD state captured when that run finished.
-            </p>
-            <div className="iteration-tabs" role="tablist" aria-label="Choose an iteration">
-              <button
-                className={selectedIteration === "current" ? "iteration-tab active" : "iteration-tab"}
-                onClick={() => setSelectedIteration("current")}
-                role="tab"
-                aria-selected={selectedIteration === "current"}
-              >
-                Current
-              </button>
-              {state.iterationSnapshots.map((snapshot) => (
-                <button
-                  className={selectedIteration === snapshot.attemptNumber ? "iteration-tab active" : "iteration-tab"}
-                  key={snapshot.attemptNumber}
-                  onClick={() => setSelectedIteration(snapshot.attemptNumber)}
-                  role="tab"
-                  aria-selected={selectedIteration === snapshot.attemptNumber}
-                >
-                  Try {snapshot.attemptNumber}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {iterationView ? (
-            <IterationInspector
-              label={iterationView.label}
-              attempt={iterationView.attempt}
-              runLedger={iterationView.runLedger}
-              improvementMemory={iterationView.improvementMemory}
-            />
-          ) : null}
-        </Panel>
-
         <Panel icon={<Archive size={18} />} title="Run ledger">
           <div className="attempt-list">
             {state.attempts.length === 0 ? (
@@ -275,27 +305,11 @@ export function App() {
           </div>
         </Panel>
 
-        <Panel icon={<Brain size={18} />} title="Remote judge">
-          {bestAttempt ? (
-            <div className="judge-box">
-              <div className="score-lockup">
-                <strong>{bestAttempt.score}/10</strong>
-                <span className={bestAttempt.pass ? "pass" : "needs-work"}>
-                  {bestAttempt.pass ? "Target reached" : "Keep iterating"}
-                </span>
-              </div>
-              <p>{bestAttempt.judgeOutputSummary}</p>
-              {bestAttempt.judgeReference ? <small>{bestAttempt.judgeReference}</small> : null}
-            </div>
-          ) : (
-            <p className="muted">The judge scores each remote output against the brief and stores the result in DKG.</p>
-          )}
-        </Panel>
-
-        <Panel icon={<GitBranch size={18} />} title="Memory used in the next prompt">
-          {memoryUsed.length ? (
+        <Panel className="memory-panel" icon={<GitBranch size={18} />} title="Orchestrator memory readback">
+          <div className="memory-boundary"><ShieldCheck size={16} /> Used by the Director only; never sent to the judge.</div>
+          {orchestratorMemory.length ? (
             <ul className="memory-used">
-              {memoryUsed.map((line) => (
+              {orchestratorMemory.map((line) => (
                 <li key={line}>{line}</li>
               ))}
             </ul>
@@ -382,6 +396,20 @@ function IterationInspector({
           <b>{label}</b>
         </div>
         {attempt ? <OutputPreview attempt={attempt} /> : <EmptyPreview />}
+        {attempt ? (
+          <div className="judge-result">
+            <div className="judge-result-heading">
+              <span><ShieldCheck size={16} /> {attempt.judgeScope === "blind-artifact" ? "Blind judge result" : "Previous judge result"}</span>
+              <strong>{attempt.score}/10</strong>
+            </div>
+            <p>{attempt.judgeOutputSummary}</p>
+            <small>
+              {attempt.judgeScope === "blind-artifact"
+                ? "Evaluation input: artifact + target criteria only."
+                : "Recorded before blind-judge isolation; preserved as historical evidence."}
+            </small>
+          </div>
+        ) : null}
       </section>
       <KnowledgeAssetSnapshot icon={<Archive size={17} />} title="Run Ledger KA" label={label} asset={runLedger}>
         <p className="asset-stat">{runLedger["demo:hasAttempt"].length} recorded attempts</p>

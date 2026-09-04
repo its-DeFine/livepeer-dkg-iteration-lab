@@ -20,6 +20,7 @@ export interface AttemptRecord {
   outputHash?: string;
   score: number;
   pass: boolean;
+  judgeScope?: "blind-artifact";
   judgeOutputSummary: string;
   judgeReference?: string;
   createdAt: string;

@@ -512,7 +512,7 @@ export function App() {
               <div className="asset-footnote">
                 <FileJson size={15} />
                 <span>{assetTab === "memory" ? shortId(snapshot.improvementMemory["@id"]) : shortId(snapshot.runLedger["@id"])}</span>
-                <span>Immutable Try {snapshot.attemptNumber} snapshot</span>
+                <span>Current schema projection of immutable Try {snapshot.attemptNumber}</span>
               </div>
             </div>
           ) : (
@@ -700,7 +700,7 @@ function KnowledgeGraphVisual({ snapshot }: { snapshot: IterationSnapshot }) {
   return (
     <div className="kg-visual">
       <div className="kg-heading">
-        <span><Network size={15} /> RDF relationship map</span>
+        <span><Network size={15} /> RDF relationship projection</span>
         <small>{runs.length} runs - {observations.length} observations</small>
       </div>
 
@@ -789,7 +789,7 @@ function KnowledgeGraphVisual({ snapshot }: { snapshot: IterationSnapshot }) {
         meta={strategy["demo:fromAttempt"] ? `fromAttempt Try ${strategy["demo:fromAttempt"]["@id"].split("/").at(-1)}` : "initial strategy"}
         compact
       />
-      <p className="kg-privacy"><ShieldCheck size={13} /> RDF contains typed relationships and sanitized evidence. Full prompts remain in private run state.</p>
+      <p className="kg-privacy"><ShieldCheck size={13} /> This visual projects the preserved run into the current RDF schema. New Tries persist these typed links; full prompts remain private.</p>
     </div>
   );
 }

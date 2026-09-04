@@ -54,6 +54,62 @@ describe("Director workspace", () => {
     expect(judgePrompt).not.toContain(first.attempt.outputReference);
   });
 
+  it("keeps a running attempt attached to its project while another project becomes active", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "iteration-lab-concurrency-"));
+    const director = createDirector(dataDir);
+    const initial = await director.getWorkspace();
+    const sourceProjectId = initial.activeProjectId;
+
+    const attemptPromise = director.runAttempt({ projectId: sourceProjectId, useDkgMemory: false });
+    const createdPromise = director.createProject({
+      title: "Second Product",
+      brief: "Create a clean second product reveal.",
+      mediaType: "image",
+      aspectRatio: "1:1",
+      successCriteria: ["The second product is clear."],
+      avoid: ["unreadable text"],
+      targetScore: 8
+    });
+
+    const [, created] = await Promise.all([attemptPromise, createdPromise]);
+    const final = await director.getWorkspace();
+    expect(final.projects).toHaveLength(2);
+    expect(final.activeProjectId).toBe(created.activeProjectId);
+    expect(final.projects.find((item) => item.projectId === sourceProjectId)?.attempts).toHaveLength(1);
+    expect(final.projects.find((item) => item.projectId === sourceProjectId)?.attemptJobs.at(-1)?.status).toBe("completed");
+  });
+
+  it("shares fingerprints and sanitized evidence instead of target or prompt text", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "iteration-lab-private-"));
+    const director = createDirector(dataDir);
+    const created = await director.createProject({
+      title: "Private Aurora owner@example.com",
+      brief: "Internal launch token=privatevalue for +30 6912 345 678.",
+      mediaType: "image",
+      aspectRatio: "16:9",
+      successCriteria: ["Show confidential-title-4711 clearly."],
+      avoid: ["secret-label-8822"],
+      targetScore: 8
+    });
+    const result = await director.runAttempt({ projectId: created.activeProjectId, useDkgMemory: false });
+    const snapshot = result.state.iterationSnapshots[0];
+    const shared = JSON.stringify({
+      runLedger: snapshot.runLedger,
+      improvementMemory: snapshot.improvementMemory,
+      runLedgerRdf: snapshot.runLedgerRdf,
+      improvementMemoryRdf: snapshot.improvementMemoryRdf
+    });
+
+    expect(result.attempt.promptHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(Object.hasOwn(result.attempt, "promptPreview")).toBe(false);
+    expect(shared).not.toContain("owner@example.com");
+    expect(shared).not.toContain("privatevalue");
+    expect(shared).not.toContain("confidential-title-4711");
+    expect(shared).not.toContain("secret-label-8822");
+    expect(shared).not.toContain("promptPreview");
+    expect(shared).not.toContain("promptSummary");
+  });
+
   it("creates and switches independent products with only supported remote media modes", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "iteration-lab-projects-"));
     const director = createDirector(dataDir);
@@ -102,6 +158,9 @@ describe("Director workspace", () => {
     for (const attempt of legacy.attempts) {
       delete attempt.mediaType;
       delete attempt.generationCapability;
+      attempt.promptPreview = "legacy private prompt owner@example.com";
+      delete attempt.promptHash;
+      delete attempt.memoryUsed;
     }
     const migrationDir = await mkdtemp(path.join(tmpdir(), "iteration-lab-legacy-"));
     await writeFile(path.join(migrationDir, "runtime-state.json"), JSON.stringify(legacy));
@@ -110,6 +169,9 @@ describe("Director workspace", () => {
     expect(migrated.projects[0].attempts).toHaveLength(1);
     expect(migrated.projects[0].target.mediaType).toBe("image");
     expect(migrated.projects[0].iterationSnapshots[0].runLedgerRdf).toContain("il:LivepeerRun");
+    expect(migrated.projects[0].attempts[0].promptHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(Object.hasOwn(migrated.projects[0].attempts[0], "promptPreview")).toBe(false);
+    expect(JSON.stringify(migrated.projects[0].runLedger)).not.toContain("legacy private prompt");
   });
 
   it("keeps a completed artifact visible when the DKG write fails", async () => {
@@ -130,5 +192,34 @@ describe("Director workspace", () => {
     expect(project.iterationSnapshots[0].dkg.state).toBe("failed");
     expect(project.attempts[0].judgeScope).toBe("blind-artifact");
     expect(project.receipt.outputReferences).toHaveLength(1);
+  });
+
+  it("persists a visible failed job when remote generation cannot start", async () => {
+    process.env.LIVEPEER_MODE = "real";
+    delete process.env.LIVEPEER_MCP_URL;
+    const dataDir = await mkdtemp(path.join(tmpdir(), "iteration-lab-job-failure-"));
+    const director = createDirector(dataDir);
+    const initial = await director.getWorkspace();
+
+    await expect(director.runAttempt({
+      projectId: initial.activeProjectId,
+      useDkgMemory: false
+    })).rejects.toThrow();
+
+    const recovered = await director.getWorkspace();
+    const project = recovered.projects[0];
+    expect(project.attempts).toHaveLength(0);
+    expect(project.attemptJobs).toHaveLength(1);
+    expect(project.attemptJobs[0]).toMatchObject({ status: "failed", phase: "generation" });
+    expect(project.attemptJobs[0].error).toBe("The remote media job did not produce an artifact.");
+
+    await expect(director.runAttempt({
+      projectId: initial.activeProjectId,
+      useDkgMemory: false
+    })).rejects.toThrow();
+
+    const retried = await director.getWorkspace();
+    expect(retried.projects[0].attemptJobs).toHaveLength(2);
+    expect(retried.projects[0].attemptJobs[1].attemptNumber).toBe(1);
   });
 });

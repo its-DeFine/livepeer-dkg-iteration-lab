@@ -97,6 +97,9 @@ app.listen(port, "0.0.0.0", () => {
 
 function sanitizeError(error: Error): string {
   const message = error.message.replace(/Bearer\s+[A-Za-z0-9._-]+/g, "Bearer [redacted]");
+  if (/dkg|knowledge asset|shared.?memory|context graph/i.test(message) && /read|query/i.test(message)) {
+    return "DKG improvement memory could not be read, so no new artifact was recorded.";
+  }
   if (/dkg|knowledge asset|assertion|shared.?memory|triple-count|merkle|promot|context graph/i.test(message)) {
     return "The artifact was saved, but its DKG snapshot could not be shared. The completed media output remains available in this project.";
   }

@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { AttemptRecord, DemoState } from "../../shared/types.js";
@@ -40,11 +41,11 @@ export class FileDkgAdapter implements DkgAdapter {
   }
 
   async readMemory(state: DemoState): Promise<string[]> {
-    return [
+    return sanitizeMemoryValues([
       ...state.improvementMemory["demo:knownFailure"],
       ...state.improvementMemory["demo:successfulPattern"],
       state.improvementMemory["demo:nextPromptStrategy"]
-    ].filter(Boolean);
+    ]);
   }
 }
 
@@ -174,16 +175,20 @@ export class DkgCliAdapter implements DkgAdapter {
     }
 
     const query = `PREFIX il: <https://atumera.com/hackathon/iteration-lab#>
-SELECT ?body WHERE {
-  ?thing il:forTarget ${targetIri(state)} ;
-    il:fromAttempt ${attemptIri(state, latest)} ;
+SELECT DISTINCT ?body WHERE {
+  VALUES (?target ?sourceAttempt) {
+    (${targetIri(state)} ${attemptIri(state, latest)})
+    (${legacyTargetIri(state)} ${legacyAttemptIri(state, latest)})
+  }
+  ?thing il:forTarget ?target ;
+    il:fromAttempt ?sourceAttempt ;
     il:body ?body .
 }`;
 
     const output = await this.run(["query", contextGraphId, "--include-shared-memory", "--sparql", query]);
     const parsed = JSON.parse(output) as { bindings?: Array<{ body?: string }> };
-    const values = (parsed.bindings ?? []).map((binding) => parseSparqlLiteral(binding.body ?? "")).filter(Boolean);
-    return [...new Set(values)];
+    const values = (parsed.bindings ?? []).map((binding) => parseSparqlLiteral(binding.body ?? ""));
+    return sanitizeMemoryValues(values);
   }
 
   private async verifyLatestAttemptReadable(contextGraphId: string, state: DemoState): Promise<void> {
@@ -298,21 +303,14 @@ export function buildRunLedgerTurtle(state: DemoState): string {
   const lines = [prefixes()];
 
   lines.push(`${target} a il:Target ;`);
-  lines.push(`  schema:name ${literal(state.target.title)} ;`);
-  lines.push(`  il:targetId ${literal(state.target.id)} ;`);
-  lines.push(`  il:brief ${literal(state.target.brief)} ;`);
+  lines.push(`  il:targetFingerprint ${literal(targetFingerprint(state))} ;`);
   lines.push(`  il:targetScore ${state.target.targetScore} .`);
   lines.push(`${target} il:mediaType ${literal(state.target.mediaType)} .`);
   lines.push(`${target} il:aspectRatio ${literal(state.target.aspectRatio)} .`);
+  lines.push(`${target} il:successCriterionCount ${state.target.successCriteria.length} .`);
+  lines.push(`${target} il:avoidRuleCount ${state.target.avoid.length} .`);
   if (state.target.durationSeconds) {
     lines.push(`${target} il:durationSeconds ${state.target.durationSeconds} .`);
-  }
-
-  for (const criterion of state.target.successCriteria) {
-    lines.push(`${target} il:successCriterion ${literal(criterion)} .`);
-  }
-  for (const avoid of state.target.avoid) {
-    lines.push(`${target} il:avoid ${literal(avoid)} .`);
   }
 
   for (const attempt of state.attempts) {
@@ -330,14 +328,14 @@ function attemptTurtle(state: DemoState, attempt: AttemptRecord): string {
     `  il:usedDkgMemory ${attempt.usedDkgMemory ? "true" : "false"} ;`,
     `  il:mediaType ${literal(attempt.mediaType)} ;`,
     `  il:generationCapability ${literal(attempt.generationCapability)} ;`,
-    `  il:promptSummary ${literal(attempt.promptSummary)} ;`,
-    `  il:promptPreview ${literal(singleLine(attempt.promptPreview))} ;`,
+    `  il:promptHash ${literal(attempt.promptHash)} ;`,
+    `  il:memoryObservationCount ${attempt.memoryUsed.length} ;`,
     `  il:outputReference ${literal(attempt.outputReference)} ;`,
     `  il:outputHash ${literal(attempt.outputHash ?? "")} ;`,
     `  il:evaluationScore ${attempt.score} ;`,
     `  il:passedTarget ${attempt.pass ? "true" : "false"} ;`,
-    `  il:judgeOutput ${literal(attempt.judgeOutputSummary)} ;`,
-    `  il:judgeReference ${literal(attempt.judgeReference ?? "")} ;`,
+    `  il:judgeOutput ${literal(sanitizeDkgMemoryText(attempt.judgeOutputSummary))} ;`,
+    `  il:judgeReference ${literal(sanitizeDkgReference(attempt.judgeReference ?? ""))} ;`,
     `  il:judgeScope ${literal(attempt.judgeScope ?? "previous-evaluation")} ;`,
     `  il:createdAt ${dateTimeLiteral(attempt.createdAt)} .`
   ].join("\n");
@@ -345,7 +343,7 @@ function attemptTurtle(state: DemoState, attempt: AttemptRecord): string {
 
 export function buildImprovementMemoryTurtle(state: DemoState): string {
   const target = targetIri(state);
-  const memory = iri(`memory/${state.sessionId}/${state.target.id}`);
+  const memory = iri(`memory/${state.sessionId}/${targetFingerprint(state)}`);
   const latest = state.attempts.at(-1);
   const lines = [prefixes()];
 
@@ -357,12 +355,12 @@ export function buildImprovementMemoryTurtle(state: DemoState): string {
   writeMemoryNotes(lines, state, latest, "knownFailure", state.improvementMemory["demo:knownFailure"]);
   writeMemoryNotes(lines, state, latest, "successfulPattern", state.improvementMemory["demo:successfulPattern"]);
 
-  lines.push(`${iri(`strategy/${state.sessionId}/${state.target.id}/${latest?.attemptNumber ?? 0}`)} a il:PromptStrategy ;`);
+  lines.push(`${iri(`strategy/${state.sessionId}/${targetFingerprint(state)}/${latest?.attemptNumber ?? 0}`)} a il:PromptStrategy ;`);
   lines.push(`  il:forTarget ${target} ;`);
   if (latest) {
     lines.push(`  il:fromAttempt ${attemptIri(state, latest)} ;`);
   }
-  lines.push(`  il:body ${literal(state.improvementMemory["demo:nextPromptStrategy"])} .`);
+  lines.push(`  il:body ${literal(sanitizeDkgMemoryText(state.improvementMemory["demo:nextPromptStrategy"]))} .`);
 
   return `${lines.join("\n")}\n`;
 }
@@ -375,13 +373,13 @@ function writeMemoryNotes(
   notes: string[]
 ): void {
   notes.forEach((note, index) => {
-    lines.push(`${iri(`memory-note/${state.sessionId}/${state.target.id}/${latest?.attemptNumber ?? 0}/${category}/${index + 1}`)} a il:MemoryObservation ;`);
+    lines.push(`${iri(`memory-note/${state.sessionId}/${targetFingerprint(state)}/${latest?.attemptNumber ?? 0}/${category}/${index + 1}`)} a il:MemoryObservation ;`);
     lines.push(`  il:forTarget ${targetIri(state)} ;`);
     if (latest) {
       lines.push(`  il:fromAttempt ${attemptIri(state, latest)} ;`);
     }
     lines.push(`  il:category ${literal(category)} ;`);
-    lines.push(`  il:body ${literal(note)} .`);
+    lines.push(`  il:body ${literal(sanitizeDkgMemoryText(note))} .`);
   });
 }
 
@@ -390,11 +388,23 @@ function scopedKaName(baseName: string, sessionId: string, version: number): str
 }
 
 function targetIri(state: DemoState): string {
-  return iri(`target/${state.sessionId}/${state.target.id}`);
+  return iri(`target/${state.sessionId}/${targetFingerprint(state)}`);
 }
 
 function attemptIri(state: DemoState, attempt: Pick<AttemptRecord, "attemptNumber">): string {
+  return iri(`attempt/${state.sessionId}/${targetFingerprint(state)}/${attempt.attemptNumber}`);
+}
+
+function legacyTargetIri(state: DemoState): string {
+  return iri(`target/${state.sessionId}/${state.target.id}`);
+}
+
+function legacyAttemptIri(state: DemoState, attempt: Pick<AttemptRecord, "attemptNumber">): string {
   return iri(`attempt/${state.sessionId}/${state.target.id}/${attempt.attemptNumber}`);
+}
+
+function targetFingerprint(state: DemoState): string {
+  return crypto.createHash("sha256").update(state.target.id).digest("hex").slice(0, 24);
 }
 
 function prefixes(): string {
@@ -417,8 +427,28 @@ function slug(value: string | number): string {
     .replace(/^-+|-+$/g, "") || "item";
 }
 
-function singleLine(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
+export function sanitizeDkgMemoryText(value: string): string {
+  return String(value)
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [redacted]")
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+    .replace(/(?:\+?\d[\d().\s-]{7,}\d)/g, "[redacted-phone]")
+    .replace(/\b(api[_ -]?key|token|password|secret|mnemonic|private[_ -]?key)\b\s*[:=]?\s*[^\s,;]+/gi, "$1 [redacted]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 500);
+}
+
+function sanitizeMemoryValues(values: string[]): string[] {
+  return [...new Set(values.map(sanitizeDkgMemoryText).filter(Boolean))].slice(0, 12);
+}
+
+function sanitizeDkgReference(value: string): string {
+  return String(value)
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [redacted]")
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 240);
 }
 
 function literal(value: string): string {

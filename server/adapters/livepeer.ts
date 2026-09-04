@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type { MediaProfile, MediaType, TargetSpec } from "../../shared/types.js";
 
 export interface GenerateMediaInput {
+  executionId: string;
   attemptNumber: number;
   prompt: string;
   target: TargetSpec;
@@ -89,7 +90,7 @@ export class LivepeerMcpAdapter implements LivepeerAdapter {
       : process.env.LIVEPEER_VIDEO_CAPABILITY || profiles.video.capability;
     const timeout = input.target.mediaType === "image"
       ? Number(process.env.LIVEPEER_IMAGE_TIMEOUT_SECONDS ?? 36)
-      : Number(process.env.LIVEPEER_VIDEO_TIMEOUT_SECONDS ?? 255);
+      : Number(process.env.LIVEPEER_VIDEO_TIMEOUT_SECONDS ?? 600);
     const isAsync = input.target.mediaType === "video";
     const payload = await this.runCapability({
       capability,
@@ -116,7 +117,7 @@ export class LivepeerMcpAdapter implements LivepeerAdapter {
       capability: videoCapability,
       prompt: input.prompt,
       inputs: mediaInputs(input.target),
-      timeout: Number(process.env.LIVEPEER_VIDEO_TIMEOUT_SECONDS ?? 255),
+      timeout: Number(process.env.LIVEPEER_VIDEO_TIMEOUT_SECONDS ?? 600),
       async: true,
       sessionId: input.target.id,
       idempotencyKey: stageKey(input, "video")
@@ -252,7 +253,7 @@ function mediaInputs(target: TargetSpec): Record<string, unknown> {
 function stageKey(input: GenerateMediaInput, stage: string): string {
   const seed = crypto
     .createHash("sha256")
-    .update(`${input.target.id}:${input.attemptNumber}:${input.prompt}:${stage}`)
+    .update(`${input.target.id}:${input.attemptNumber}:${input.executionId}:${input.prompt}:${stage}`)
     .digest("hex")
     .slice(0, 36);
   return `il_${stage}_${seed}`;

@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import type {
   AspectRatio,
+  AttemptJob,
   ConfigStatus,
   CreateProjectRequest,
   DemoState,
@@ -53,6 +54,7 @@ export function App() {
   const [form, setForm] = useState<CreateProjectRequest>(emptyForm);
   const [busy, setBusy] = useState<"baseline" | "memory" | "create" | null>(null);
   const [error, setError] = useState("");
+  const [pendingProjectId, setPendingProjectId] = useState<string | null>(null);
 
   useEffect(() => {
     void Promise.all([getJson<WorkspaceState>("/api/state"), getJson<ConfigStatus>("/api/config")])
@@ -62,6 +64,27 @@ export function App() {
       })
       .catch((cause) => setError(messageOf(cause)));
   }, []);
+
+  const hasActiveJobs = Boolean(workspace?.projects.some((candidate) =>
+    candidate.attemptJobs.some((job) => isActiveJob(job))
+  ));
+  const attemptRequestPending = busy === "baseline" || busy === "memory";
+
+  useEffect(() => {
+    if (!hasActiveJobs && !attemptRequestPending) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const next = await getJson<WorkspaceState>("/api/state");
+        if (!cancelled) setWorkspace(next);
+      } catch {
+        // The original request remains authoritative; the next poll can recover.
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 1500);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [hasActiveJobs, attemptRequestPending]);
 
   const project = workspace?.projects.find((candidate) => candidate.projectId === workspace.activeProjectId)
     ?? workspace?.projects[0]
@@ -74,6 +97,9 @@ export function App() {
   const snapshot = project?.iterationSnapshots[selectedTry] ?? null;
   const attempt = project?.attempts[selectedTry] ?? null;
   const previous = selectedTry > 0 ? project?.iterationSnapshots[selectedTry - 1] ?? null : null;
+  const selectedAttemptJob = attempt
+    ? [...(project?.attemptJobs ?? [])].reverse().find((job) => job.attemptNumber === attempt.attemptNumber) ?? null
+    : null;
 
   async function selectProject(projectId: string) {
     if (!workspace || projectId === workspace.activeProjectId) return;
@@ -87,11 +113,13 @@ export function App() {
 
   async function runAttempt(useDkgMemory: boolean) {
     if (!project) return;
+    const projectId = project.projectId;
+    setPendingProjectId(projectId);
     setBusy(useDkgMemory ? "memory" : "baseline");
     setError("");
     try {
       const result = await postJson<{ workspace: WorkspaceState }>(
-        `/api/projects/${encodeURIComponent(project.projectId)}/attempts`,
+        `/api/projects/${encodeURIComponent(projectId)}/attempts`,
         { useDkgMemory }
       );
       setWorkspace(result.workspace);
@@ -104,6 +132,7 @@ export function App() {
       }
     } finally {
       setBusy(null);
+      setPendingProjectId(null);
     }
   }
 
@@ -137,7 +166,22 @@ export function App() {
   }
 
   const score = attempt?.score ?? 0;
-  const isRunning = busy === "baseline" || busy === "memory";
+  const activeJob = [...project.attemptJobs].reverse().find(isActiveJob);
+  const latestJob = project.attemptJobs[project.attemptJobs.length - 1] ?? null;
+  const latestFailedJob = latestJob?.status === "failed" ? latestJob : null;
+  const pendingHere = attemptRequestPending && pendingProjectId === project.projectId;
+  const isProjectRunning = Boolean(activeJob) || pendingHere;
+  const visibleJobs = project.attemptJobs.filter((job) =>
+    isActiveJob(job) ||
+    (job.status === "failed" && (job.phase === "dkg" ||
+      !project.attempts.some((attemptRecord) => attemptRecord.attemptNumber === job.attemptNumber)))
+  );
+  const isRunning = hasActiveJobs || attemptRequestPending;
+  const nextAttemptNumber = Math.max(
+    0,
+    ...project.attempts.map((item) => item.attemptNumber),
+    ...project.attemptJobs.filter(isActiveJob).map((job) => job.attemptNumber)
+  ) + 1;
 
   return (
     <div className="app-shell">
@@ -155,7 +199,10 @@ export function App() {
           <div className="select-wrap">
             <select value={project.projectId} onChange={(event) => void selectProject(event.target.value)}>
               {workspace.projects.map((candidate) => (
-                <option key={candidate.projectId} value={candidate.projectId}>{candidate.target.title}</option>
+                <option key={candidate.projectId} value={candidate.projectId}>
+                  {candidate.target.title}
+                  {candidate.attemptJobs.some(isActiveJob) ? " - running" : latestJobStatus(candidate.attemptJobs) === "failed" ? " - needs attention" : ""}
+                </option>
               ))}
             </select>
             <ChevronDown size={15} />
@@ -199,7 +246,7 @@ export function App() {
 
           <div className="rail-heading">
             <span>Iterations</span>
-            <strong>{project.attempts.length}</strong>
+            <strong>{nextAttemptNumber - 1}</strong>
           </div>
 
           <div className="timeline">
@@ -212,12 +259,24 @@ export function App() {
                 <span className="timeline-node">{item.pass ? <Check size={13} /> : index + 1}</span>
                 <span className="timeline-copy">
                   <strong>Try {item.attemptNumber}</strong>
-                  <small>{item.usedDkgMemory ? "With DKG memory" : "Target only"}</small>
+                  <small>{attemptMemoryLabel(item, project.attemptJobs)}</small>
                 </span>
                 <span className={`score-mini ${item.pass ? "pass" : ""}`}>{item.score}/10</span>
               </button>
             ))}
-            {!project.attempts.length && (
+            {visibleJobs.map((job) => (
+              <div className={`timeline-item job ${job.status}`} key={job.id}>
+                <span className="timeline-node">
+                  {isActiveJob(job) ? <LoaderCircle className="spin" size={13} /> : <X size={13} />}
+                </span>
+                <span className="timeline-copy">
+                  <strong>Try {job.attemptNumber}</strong>
+                  <small>{job.status === "failed" ? job.error : jobStatusLabel(job)}</small>
+                </span>
+                <span className="score-mini">{job.status === "failed" ? "Failed" : "Live"}</span>
+              </div>
+            ))}
+            {!project.attempts.length && !project.attemptJobs.length && (
               <div className="empty-timeline">
                 <span className="timeline-node">1</span>
                 <p>Your first artifact will appear here.</p>
@@ -247,11 +306,21 @@ export function App() {
               ) : (
                 <button className="primary" disabled={isRunning} onClick={() => void runAttempt(true)}>
                   {busy === "memory" ? <LoaderCircle className="spin" size={17} /> : <BrainCircuit size={17} />}
-                  Improve with DKG
+                  Generate Try {nextAttemptNumber} with DKG memory
                 </button>
               )}
             </div>
           </div>
+
+          {latestFailedJob && !activeJob && (
+            <div className="job-failure-notice" role="status">
+              <span><X size={15} /></span>
+              <div>
+                <strong>Try {latestFailedJob.attemptNumber} stopped during {jobStatusLabel(latestFailedJob).toLowerCase()}</strong>
+                <p>{latestFailedJob.error ?? "The run did not complete."}</p>
+              </div>
+            </div>
+          )}
 
           <div className={`artifact-frame ${!attempt ? "empty" : ""}`}>
             {attempt ? (
@@ -267,11 +336,11 @@ export function App() {
                 </button>
               </div>
             )}
-            {isRunning && (
+            {isProjectRunning && (
               <div className="job-overlay">
                 <LoaderCircle className="spin" />
-                <strong>Remote media job in progress</strong>
-                <span>Generation, blind evaluation, then DKG readback.</span>
+                <strong>Try {activeJob?.attemptNumber ?? nextAttemptNumber} - {activeJob ? jobStatusLabel(activeJob) : "Starting"}</strong>
+                <span>This job stays attached to {project.target.title}, even if you open another project.</span>
               </div>
             )}
           </div>
@@ -291,6 +360,32 @@ export function App() {
                 <p>{attempt.judgeOutputSummary}</p>
                 <small>The judge received only the artifact and target criteria.</small>
               </div>
+            </div>
+          )}
+
+          {attempt && (
+            <div className="prompt-trace-card">
+              <div className="prompt-trace-heading">
+                <span><BrainCircuit size={15} /> Director input for Try {attempt.attemptNumber}</span>
+                <code>{attempt.promptHash.slice(0, 12)}</code>
+              </div>
+              {attempt.usedDkgMemory ? (
+                <>
+                  <p>The Director composed a new prompt from the target plus these sanitized DKG observations:</p>
+                  <ul>{attempt.memoryUsed.map((item) => <li key={item}>{item}</li>)}</ul>
+                  <small>The previous full prompt was not read from DKG or resent. The fingerprint proves which newly composed prompt produced this artifact.</small>
+                </>
+              ) : selectedAttemptJob?.useDkgMemory ? (
+                <>
+                  <p>DKG memory was requested, but the node returned no reusable observations. This prompt was composed from the target only.</p>
+                  <small>The prompt fingerprint and zero-observation record keep that provenance explicit.</small>
+                </>
+              ) : (
+                <>
+                  <p>Target brief and criteria only. No DKG improvement memory was read for this baseline.</p>
+                  <small>The fingerprint identifies the composed prompt without exposing its text in the shared knowledge assets.</small>
+                </>
+              )}
             </div>
           )}
 
@@ -651,6 +746,35 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
   return payload as T;
 }
 
+function attemptMemoryLabel(attempt: DemoState["attempts"][number], jobs: AttemptJob[]): string {
+  if (attempt.usedDkgMemory) return "With DKG memory";
+  const job = [...jobs].reverse().find((candidate) => candidate.attemptNumber === attempt.attemptNumber);
+  return job?.useDkgMemory ? "DKG returned no memory" : "Target only";
+}
+
 function messageOf(cause: unknown): string {
   return cause instanceof Error ? cause.message : "Something went wrong.";
+}
+
+function isActiveJob(job: AttemptJob): boolean {
+  return job.status !== "completed" && job.status !== "failed";
+}
+
+function latestJobStatus(jobs: AttemptJob[]): AttemptJob["status"] | null {
+  return jobs[jobs.length - 1]?.status ?? null;
+}
+
+function jobStatusLabel(job: AttemptJob): string {
+  if (job.status === "failed") {
+    if (job.phase === "memory") return "DKG memory read";
+    if (job.phase === "generation") return "remote generation";
+    if (job.phase === "judging") return "blind evaluation";
+    if (job.phase === "dkg") return "DKG sharing";
+    return "run";
+  }
+  if (job.phase === "memory") return "Reading DKG memory";
+  if (job.phase === "generation") return "Generating remotely";
+  if (job.phase === "judging") return "Blind evaluation";
+  if (job.phase === "dkg") return "Sharing DKG assets";
+  return "Complete";
 }

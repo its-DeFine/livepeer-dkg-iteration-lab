@@ -24,11 +24,29 @@ export interface TargetSpec {
   targetScore: number;
 }
 
+export type AttemptJobStatus = "generating" | "judging" | "sharing" | "completed" | "failed";
+export type AttemptJobPhase = "memory" | "generation" | "judging" | "dkg" | "complete";
+
+export interface AttemptJob {
+  id: string;
+  projectId: string;
+  attemptNumber: number;
+  useDkgMemory: boolean;
+  status: AttemptJobStatus;
+  phase: AttemptJobPhase;
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  error?: string;
+}
+
 export interface AttemptRecord {
   id: string;
   attemptNumber: number;
   promptSummary: string;
-  promptPreview: string;
+  promptHash: string;
+  memoryUsed: string[];
+  promptPreview?: string;
   usedDkgMemory: boolean;
   mediaType: MediaType;
   generationCapability: string;
@@ -105,6 +123,7 @@ export interface DemoState {
   createdAt: string;
   target: TargetSpec;
   attempts: AttemptRecord[];
+  attemptJobs: AttemptJob[];
   runLedger: RunLedgerKa;
   improvementMemory: ImprovementMemoryKa;
   iterationSnapshots: IterationSnapshot[];

@@ -47,11 +47,11 @@ The init script creates a local DKG home in the `iteration-lab-dkg-home` Docker 
 
 Run Ledger Knowledge Asset:
 
-- target
+- target fingerprint and structural metadata
 - attempt number
-- prompt summary
+- prompt fingerprint and DKG-observation count
 - Livepeer output reference
-- evaluation rubric
+- media type and generation capability
 - judge output
 - score
 - decision

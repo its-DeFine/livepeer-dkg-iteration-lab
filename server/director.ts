@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import type {
+  AttemptJob,
   AttemptRecord,
   ConfigStatus,
   CreateProjectRequest,
@@ -17,7 +18,8 @@ import type {
 import {
   buildImprovementMemoryTurtle,
   buildRunLedgerTurtle,
-  createDkgAdapter
+  createDkgAdapter,
+  sanitizeDkgMemoryText
 } from "./adapters/dkg.js";
 import { createLivepeerAdapter, mediaProfileFor, supportedMediaProfiles } from "./adapters/livepeer.js";
 import { createJudgeAdapter } from "./adapters/judge.js";
@@ -33,8 +35,9 @@ export function createDirector(dataDir: string) {
   const livepeer = createLivepeerAdapter();
   const dkg = createDkgAdapter(store);
   const judge = createJudgeAdapter();
+  let mutationTail = Promise.resolve();
 
-  async function getWorkspace(): Promise<WorkspaceState> {
+  async function loadWorkspace(): Promise<WorkspaceState> {
     const existingWorkspace = await store.readWorkspace();
     if (existingWorkspace) {
       const normalized = normalizeWorkspace(existingWorkspace);
@@ -55,134 +58,304 @@ export function createDirector(dataDir: string) {
     return workspace;
   }
 
+  async function getWorkspace(): Promise<WorkspaceState> {
+    await mutationTail;
+    return loadWorkspace();
+  }
+
+  async function mutateWorkspace<T>(
+    mutate: (workspace: WorkspaceState) =>
+      { workspace: WorkspaceState; value: T } | Promise<{ workspace: WorkspaceState; value: T }>
+  ): Promise<T> {
+    const previous = mutationTail;
+    let release = () => {};
+    mutationTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      const result = await mutate(await loadWorkspace());
+      await writeWorkspace(result.workspace);
+      return result.value;
+    } finally {
+      release();
+    }
+  }
+
   async function createProject(request: CreateProjectRequest): Promise<WorkspaceState> {
-    const workspace = await getWorkspace();
-    const target = targetFromRequest(request);
-    const project = createInitialProject(target);
-    const next: WorkspaceState = {
-      projects: [...workspace.projects, project],
-      activeProjectId: project.projectId,
-      updatedAt: new Date().toISOString()
-    };
-    await writeWorkspace(next);
-    return next;
+    return mutateWorkspace((workspace) => {
+      const target = targetFromRequest(request);
+      const project = createInitialProject(target);
+      const next: WorkspaceState = {
+        projects: [...workspace.projects, project],
+        activeProjectId: project.projectId,
+        updatedAt: new Date().toISOString()
+      };
+      return { workspace: next, value: next };
+    });
   }
 
   async function selectProject(projectId: string): Promise<WorkspaceState> {
-    const workspace = await getWorkspace();
-    requireProject(workspace, projectId);
-    const next = { ...workspace, activeProjectId: projectId, updatedAt: new Date().toISOString() };
-    await writeWorkspace(next);
-    return next;
+    return mutateWorkspace((workspace) => {
+      requireProject(workspace, projectId);
+      const next = { ...workspace, activeProjectId: projectId, updatedAt: new Date().toISOString() };
+      return { workspace: next, value: next };
+    });
+  }
+
+  async function updateAttemptJob(
+    projectId: string,
+    jobId: string,
+    patch: Partial<AttemptJob>
+  ): Promise<DemoState> {
+    return mutateWorkspace((workspace) => {
+      const project = requireProject(workspace, projectId);
+      const now = new Date().toISOString();
+      const attemptJobs = project.attemptJobs.map((job) =>
+        job.id === jobId ? { ...job, ...patch, updatedAt: now } : job
+      );
+      if (!attemptJobs.some((job) => job.id === jobId)) throw new Error("Attempt job not found.");
+      const updated = { ...project, attemptJobs, updatedAt: now };
+      const next = replaceProject(workspace, updated);
+      return { workspace: next, value: updated };
+    });
+  }
+
+  async function failAttemptJob(
+    projectId: string,
+    jobId: string,
+    phase: AttemptJob["phase"]
+  ): Promise<void> {
+    const now = new Date().toISOString();
+    await updateAttemptJob(projectId, jobId, {
+      status: "failed",
+      phase,
+      error: safeJobError(phase),
+      completedAt: now
+    });
   }
 
   async function runAttempt(request: RunAttemptRequest): Promise<RunAttemptResponse> {
-    const workspace = await getWorkspace();
-    const projectId = request.projectId || workspace.activeProjectId;
-    const current = requireProject(workspace, projectId);
-    const target = current.target;
-    const attemptNumber = current.attempts.length + 1;
-    const memoryUsed = request.useDkgMemory ? await dkg.readMemory(current) : [];
-    const prompt = buildPrompt(target, memoryUsed, attemptNumber);
-    const media = await livepeer.generate({ attemptNumber, prompt, target });
-    const judgment = await judge.judge({ target, media });
-
-    const attempt: AttemptRecord = {
-      id: `${target.id}-attempt-${attemptNumber}`,
-      judgeScope: "blind-artifact",
-      attemptNumber,
-      promptSummary: summarizePrompt(prompt),
-      promptPreview: prompt,
-      usedDkgMemory: request.useDkgMemory,
-      mediaType: media.mediaType,
-      generationCapability: media.capability,
-      outputReference: media.outputReference,
-      outputHash: media.outputHash,
-      score: judgment.score,
-      pass: judgment.score >= target.targetScore,
-      judgeOutputSummary: judgment.feedback,
-      judgeReference: judgment.reference,
-      createdAt: new Date().toISOString()
-    };
-
-    const attempts = [...current.attempts, attempt];
-    const runLedger = buildRunLedger(current.sessionId, target, attempts);
-    const improvementMemory = buildImprovementMemory(current.sessionId, target, attempts, attempt.createdAt);
-    const draftProject: DemoState = {
-      ...current,
-      attempts,
-      runLedger,
-      improvementMemory,
-      iterationSnapshots: current.iterationSnapshots,
-      receipt: buildReceipt(current.projectId, target, attempts, runLedger, improvementMemory),
-      updatedAt: new Date().toISOString()
-    };
-    const snapshot = buildSnapshot(draftProject, attempt, "pending");
-    draftProject.iterationSnapshots = [...current.iterationSnapshots, snapshot];
-
-    let nextWorkspace = replaceProject(workspace, draftProject);
-    await writeWorkspace(nextWorkspace);
-
-    try {
-      const references = await dkg.writeState(draftProject);
-      snapshot.dkg = {
-        state: "shared",
-        layer: process.env.DKG_MODE === "cli" ? "SWM" : "local",
-        runLedgerReference: references.runLedgerReference,
-        improvementMemoryReference: references.improvementMemoryReference,
-        recordedAt: new Date().toISOString()
+    const reservation = await mutateWorkspace((workspace) => {
+      const projectId = request.projectId || workspace.activeProjectId;
+      const current = requireProject(workspace, projectId);
+      if (current.attemptJobs.some((job) => isActiveJob(job))) {
+        throw new Error("An attempt is already running for this project.");
+      }
+      const attemptNumber = Math.max(
+        0,
+        ...current.attempts.map((attempt) => attempt.attemptNumber),
+        ...current.attemptJobs.filter(isActiveJob).map((job) => job.attemptNumber)
+      ) + 1;
+      const now = new Date().toISOString();
+      const job: AttemptJob = {
+        id: `job-${crypto.randomUUID()}`,
+        projectId,
+        attemptNumber,
+        useDkgMemory: request.useDkgMemory,
+        status: "generating",
+        phase: request.useDkgMemory ? "memory" : "generation",
+        startedAt: now,
+        updatedAt: now
       };
-      draftProject.receipt.runLedgerReference = references.runLedgerReference;
-      draftProject.receipt.improvementMemoryReference = references.improvementMemoryReference;
-      nextWorkspace = replaceProject(nextWorkspace, draftProject);
-      await writeWorkspace(nextWorkspace);
+      const updated = {
+        ...current,
+        attemptJobs: [...current.attemptJobs, job],
+        updatedAt: now
+      };
+      const next = replaceProject(workspace, updated);
+      return { workspace: next, value: { job, project: updated } };
+    });
+
+    const { job } = reservation;
+    const target = reservation.project.target;
+    let phase: AttemptJob["phase"] = job.phase;
+    let artifactPersisted = false;
+    try {
+      const memoryUsed = request.useDkgMemory
+        ? (await dkg.readMemory(reservation.project)).map(sanitizeDkgMemoryText).filter(Boolean)
+        : [];
+      phase = "generation";
+      await updateAttemptJob(job.projectId, job.id, { status: "generating", phase });
+      const prompt = buildPrompt(target, memoryUsed, job.attemptNumber);
+      const media = await livepeer.generate({ attemptNumber: job.attemptNumber, executionId: job.id, prompt, target });
+
+      phase = "judging";
+      await updateAttemptJob(job.projectId, job.id, { status: "judging", phase });
+      const judgment = await judge.judge({ target, media });
+      const createdAt = new Date().toISOString();
+      const attempt: AttemptRecord = {
+        id: `${target.id}-attempt-${job.attemptNumber}`,
+        judgeScope: "blind-artifact",
+        attemptNumber: job.attemptNumber,
+        promptSummary: describePrompt(target, memoryUsed, job.attemptNumber),
+        promptHash: hashValue(prompt),
+        memoryUsed,
+        usedDkgMemory: request.useDkgMemory && memoryUsed.length > 0,
+        mediaType: media.mediaType,
+        generationCapability: media.capability,
+        outputReference: media.outputReference,
+        outputHash: media.outputHash,
+        score: judgment.score,
+        pass: judgment.score >= target.targetScore,
+        judgeOutputSummary: sanitizeDkgMemoryText(judgment.feedback),
+        judgeReference: judgment.reference,
+        createdAt
+      };
+
+      phase = "dkg";
+      const draftProject = await mutateWorkspace((workspace) => {
+        const current = requireProject(workspace, job.projectId);
+        if (current.attempts.some((candidate) => candidate.attemptNumber === attempt.attemptNumber)) {
+          throw new Error("This attempt number is already recorded.");
+        }
+        const attempts = [...current.attempts, attempt].sort((left, right) => left.attemptNumber - right.attemptNumber);
+        const runLedger = buildRunLedger(current.sessionId, current.target, attempts);
+        const improvementMemory = buildImprovementMemory(current.sessionId, current.target, attempts, attempt.createdAt);
+        const now = new Date().toISOString();
+        const draft: DemoState = {
+          ...current,
+          attempts,
+          attemptJobs: current.attemptJobs.map((candidate) =>
+            candidate.id === job.id
+              ? { ...candidate, status: "sharing", phase: "dkg", updatedAt: now }
+              : candidate
+          ),
+          runLedger,
+          improvementMemory,
+          iterationSnapshots: current.iterationSnapshots,
+          receipt: buildReceipt(current.projectId, current.target, attempts, runLedger, improvementMemory),
+          updatedAt: now
+        };
+        draft.iterationSnapshots = [...current.iterationSnapshots, buildSnapshot(draft, attempt, "pending")];
+        const next = replaceProject(workspace, draft);
+        return { workspace: next, value: draft };
+      });
+      artifactPersisted = true;
+
+      try {
+        const references = await dkg.writeState(draftProject);
+        const completed = await mutateWorkspace((workspace) => {
+          const current = requireProject(workspace, job.projectId);
+          const now = new Date().toISOString();
+          const iterationSnapshots = current.iterationSnapshots.map((snapshot) =>
+            snapshot.attemptNumber === attempt.attemptNumber
+              ? {
+                  ...snapshot,
+                  dkg: {
+                    state: "shared" as const,
+                    layer: process.env.DKG_MODE === "cli" ? "SWM" as const : "local" as const,
+                    runLedgerReference: references.runLedgerReference,
+                    improvementMemoryReference: references.improvementMemoryReference,
+                    recordedAt: now
+                  }
+                }
+              : snapshot
+          );
+          const receipt = {
+            ...current.receipt,
+            runLedgerReference: references.runLedgerReference,
+            improvementMemoryReference: references.improvementMemoryReference
+          };
+          const updated: DemoState = {
+            ...current,
+            attemptJobs: current.attemptJobs.map((candidate) =>
+              candidate.id === job.id
+                ? { ...candidate, status: "completed", phase: "complete", updatedAt: now, completedAt: now }
+                : candidate
+            ),
+            iterationSnapshots,
+            receipt,
+            updatedAt: now
+          };
+          const next = replaceProject(workspace, updated);
+          return { workspace: next, value: { workspace: next, state: updated } };
+        });
+        return { ...completed, attempt, memoryUsed };
+      } catch (error) {
+        await mutateWorkspace((workspace) => {
+          const current = requireProject(workspace, job.projectId);
+          const now = new Date().toISOString();
+          const updated: DemoState = {
+            ...current,
+            attemptJobs: current.attemptJobs.map((candidate) =>
+              candidate.id === job.id
+                ? {
+                    ...candidate,
+                    status: "failed",
+                    phase: "dkg",
+                    error: safeJobError("dkg"),
+                    updatedAt: now,
+                    completedAt: now
+                  }
+                : candidate
+            ),
+            iterationSnapshots: current.iterationSnapshots.map((snapshot) =>
+              snapshot.attemptNumber === attempt.attemptNumber
+                ? { ...snapshot, dkg: { state: "failed", layer: process.env.DKG_MODE === "cli" ? "WM" : "local" } }
+                : snapshot
+            ),
+            updatedAt: now
+          };
+          const next = replaceProject(workspace, updated);
+          return { workspace: next, value: undefined };
+        });
+        throw error;
+      }
     } catch (error) {
-      snapshot.dkg = { state: "failed", layer: process.env.DKG_MODE === "cli" ? "WM" : "local" };
-      nextWorkspace = replaceProject(nextWorkspace, draftProject);
-      await writeWorkspace(nextWorkspace);
+      if (!artifactPersisted) await failAttemptJob(job.projectId, job.id, phase);
       throw error;
     }
-
-    return { workspace: nextWorkspace, state: draftProject, attempt, memoryUsed };
   }
 
   async function backfillProject(projectId: string): Promise<WorkspaceState> {
-    let workspace = await getWorkspace();
-    const project = requireProject(workspace, projectId);
-
-    for (let index = 0; index < project.iterationSnapshots.length; index += 1) {
-      const snapshot = project.iterationSnapshots[index];
+    const initial = requireProject(await getWorkspace(), projectId);
+    for (let index = 0; index < initial.iterationSnapshots.length; index += 1) {
+      const current = requireProject(await getWorkspace(), projectId);
+      const snapshot = current.iterationSnapshots[index];
       if (snapshot.dkg.state === "shared") continue;
-      const attempts = project.attempts.slice(0, index + 1);
+      const attempts = current.attempts.slice(0, index + 1);
       const partial: DemoState = {
-        ...project,
+        ...current,
         attempts,
         runLedger: snapshot.runLedger,
         improvementMemory: snapshot.improvementMemory,
-        iterationSnapshots: project.iterationSnapshots.slice(0, index + 1),
-        receipt: buildReceipt(project.projectId, project.target, attempts, snapshot.runLedger, snapshot.improvementMemory),
+        iterationSnapshots: current.iterationSnapshots.slice(0, index + 1),
+        receipt: buildReceipt(current.projectId, current.target, attempts, snapshot.runLedger, snapshot.improvementMemory),
         updatedAt: snapshot.capturedAt
       };
+      let dkgStatus: IterationSnapshot["dkg"] = { state: "failed", layer: process.env.DKG_MODE === "cli" ? "WM" : "local" };
+      let references: { runLedgerReference: string; improvementMemoryReference: string } | undefined;
       try {
-        const references = await dkg.writeState(partial);
-        snapshot.dkg = {
+        references = await dkg.writeState(partial);
+        dkgStatus = {
           state: "shared",
-          layer: process.env.DKG_MODE === "cli" ? "SWM" : "local",
+          layer: process.env.DKG_MODE === "cli" ? "SWM" as const : "local" as const,
           runLedgerReference: references.runLedgerReference,
           improvementMemoryReference: references.improvementMemoryReference,
           recordedAt: new Date().toISOString()
         };
-        if (index === project.iterationSnapshots.length - 1) {
-          project.receipt.runLedgerReference = references.runLedgerReference;
-          project.receipt.improvementMemoryReference = references.improvementMemoryReference;
-        }
       } catch {
-        snapshot.dkg = { state: "failed", layer: process.env.DKG_MODE === "cli" ? "WM" : "local" };
+        // The failed status is persisted below without replacing unrelated workspace changes.
       }
-      workspace = replaceProject(workspace, project);
-      await writeWorkspace(workspace);
+      await mutateWorkspace((workspace) => {
+        const latest = requireProject(workspace, projectId);
+        const iterationSnapshots = latest.iterationSnapshots.map((item, snapshotIndex) =>
+          snapshotIndex === index ? { ...item, dkg: dkgStatus } : item
+        );
+        const receipt = references && index === latest.iterationSnapshots.length - 1
+          ? {
+              ...latest.receipt,
+              runLedgerReference: references.runLedgerReference,
+              improvementMemoryReference: references.improvementMemoryReference
+            }
+          : latest.receipt;
+        const updated = { ...latest, iterationSnapshots, receipt, updatedAt: new Date().toISOString() };
+        const next = replaceProject(workspace, updated);
+        return { workspace: next, value: undefined };
+      });
     }
-    return workspace;
+    return getWorkspace();
   }
 
   async function writeWorkspace(workspace: WorkspaceState): Promise<void> {
@@ -252,7 +425,7 @@ function targetFromRequest(request: CreateProjectRequest): TargetSpec {
   if (!successCriteria.length) throw new Error("Add at least one success criterion.");
 
   return {
-    id: `${slug(title)}-${crypto.randomUUID().slice(0, 6)}`,
+    id: `target-${crypto.randomUUID()}`,
     title,
     brief,
     mediaType,
@@ -296,6 +469,7 @@ function createInitialProject(target: TargetSpec): DemoState {
     createdAt: now,
     target,
     attempts: [],
+    attemptJobs: [],
     runLedger,
     improvementMemory,
     iterationSnapshots: [],
@@ -321,28 +495,65 @@ function normalizeProject(input: Partial<DemoState> & Pick<DemoState, "target" |
     mediaType: input.target.mediaType || inferMediaType(input.attempts[0]?.outputReference),
     aspectRatio: input.target.aspectRatio || "16:9"
   };
-  const attempts = input.attempts.map((attempt) => ({
-    ...attempt,
-    mediaType: attempt.mediaType || target.mediaType,
-    generationCapability: attempt.generationCapability || mediaProfileFor(target.mediaType).capability,
-    judgeScope: attempt.judgeScope || "blind-artifact"
-  }));
+  const attempts = input.attempts.map((attempt, index) => {
+    const previousMemory = index > 0 ? input.iterationSnapshots?.[index - 1]?.improvementMemory : undefined;
+    const memoryUsed = Array.isArray(attempt.memoryUsed)
+      ? attempt.memoryUsed.map(sanitizeDkgMemoryText).filter(Boolean)
+      : attempt.usedDkgMemory && previousMemory
+        ? memoryValues(previousMemory)
+        : [];
+    const normalized: AttemptRecord = {
+      ...attempt,
+      promptSummary: describePrompt(target, memoryUsed, attempt.attemptNumber),
+      promptHash: attempt.promptHash || hashValue(attempt.promptPreview || `${attempt.id}:${attempt.attemptNumber}`),
+      memoryUsed,
+      usedDkgMemory: Boolean(attempt.usedDkgMemory && memoryUsed.length),
+      mediaType: attempt.mediaType || target.mediaType,
+      generationCapability: attempt.generationCapability || mediaProfileFor(target.mediaType).capability,
+      judgeScope: attempt.judgeScope || "blind-artifact",
+      judgeOutputSummary: sanitizeDkgMemoryText(attempt.judgeOutputSummary)
+    };
+    delete normalized.promptPreview;
+    return normalized;
+  });
+  const attemptJobs = Array.isArray(input.attemptJobs) ? input.attemptJobs : [];
   const runLedger = buildRunLedger(sessionId, target, attempts);
-  const improvementMemory = input.improvementMemory || buildImprovementMemory(sessionId, target, attempts);
+  const improvementMemory = buildImprovementMemory(
+    sessionId,
+    target,
+    attempts,
+    input.improvementMemory?.["demo:updatedAt"]
+  );
   const sourceSnapshots = Array.isArray(input.iterationSnapshots) && input.iterationSnapshots.length
     ? input.iterationSnapshots
-    : buildIterationSnapshots({ projectId, sessionId, createdAt, target, attempts, runLedger, improvementMemory } as DemoState);
+    : buildIterationSnapshots({
+        projectId,
+        sessionId,
+        createdAt,
+        target,
+        attempts,
+        attemptJobs,
+        runLedger,
+        improvementMemory
+      } as DemoState);
   const iterationSnapshots = sourceSnapshots.map((snapshot, index) => {
     const partialAttempts = attempts.slice(0, index + 1);
+    const safeRunLedger = buildRunLedger(sessionId, target, partialAttempts);
+    const safeImprovementMemory = buildImprovementMemory(
+      sessionId,
+      target,
+      partialAttempts,
+      snapshot.capturedAt
+    );
     const snapshotState = {
       projectId,
       sessionId,
       createdAt,
       target,
       attempts: partialAttempts,
-      runLedger: snapshot.runLedger || buildRunLedger(sessionId, target, partialAttempts),
-      improvementMemory:
-        snapshot.improvementMemory || buildImprovementMemory(sessionId, target, partialAttempts, snapshot.capturedAt),
+      attemptJobs,
+      runLedger: safeRunLedger,
+      improvementMemory: safeImprovementMemory,
       iterationSnapshots: [],
       receipt: {} as SubmissionReceipt,
       updatedAt: snapshot.capturedAt
@@ -351,8 +562,10 @@ function normalizeProject(input: Partial<DemoState> & Pick<DemoState, "target" |
     const legacyShared = isLatest && input.receipt?.runLedgerReference?.startsWith("dkg:");
     return {
       ...snapshot,
-      runLedgerRdf: snapshot.runLedgerRdf || buildRunLedgerTurtle(snapshotState),
-      improvementMemoryRdf: snapshot.improvementMemoryRdf || buildImprovementMemoryTurtle(snapshotState),
+      runLedger: safeRunLedger,
+      improvementMemory: safeImprovementMemory,
+      runLedgerRdf: buildRunLedgerTurtle(snapshotState),
+      improvementMemoryRdf: buildImprovementMemoryTurtle(snapshotState),
       dkg: snapshot.dkg || (legacyShared
         ? {
             state: "shared" as const,
@@ -376,6 +589,7 @@ function normalizeProject(input: Partial<DemoState> & Pick<DemoState, "target" |
     createdAt,
     target,
     attempts,
+    attemptJobs,
     runLedger,
     improvementMemory,
     iterationSnapshots,
@@ -397,7 +611,7 @@ function requireProject(workspace: WorkspaceState, projectId: string): DemoState
 function replaceProject(workspace: WorkspaceState, project: DemoState): WorkspaceState {
   return {
     projects: workspace.projects.map((candidate) => candidate.projectId === project.projectId ? project : candidate),
-    activeProjectId: project.projectId,
+    activeProjectId: workspace.activeProjectId,
     updatedAt: new Date().toISOString()
   };
 }
@@ -420,22 +634,53 @@ function buildPrompt(target: TargetSpec, memoryUsed: string[], attemptNumber: nu
   ].join("\n");
 }
 
-function summarizePrompt(prompt: string): string {
-  return prompt.replace(/\s+/g, " ").slice(0, 180);
+function describePrompt(target: TargetSpec, memoryUsed: string[], attemptNumber: number): string {
+  const duration = target.durationSeconds ? `, ${target.durationSeconds}s` : "";
+  return `Try ${attemptNumber}: ${target.mediaType}, ${target.aspectRatio}${duration}; ${memoryUsed.length} distilled DKG observations applied.`;
+}
+
+function hashValue(value: string): string {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function targetReference(target: TargetSpec): string {
+  return hashValue(target.id).slice(0, 24);
+}
+
+function memoryValues(memory: ImprovementMemoryKa): string[] {
+  return [...new Set([
+    ...memory["demo:knownFailure"],
+    ...memory["demo:successfulPattern"],
+    memory["demo:nextPromptStrategy"]
+  ].map(sanitizeDkgMemoryText).filter(Boolean))].slice(0, 12);
+}
+
+function isActiveJob(job: AttemptJob): boolean {
+  return job.status === "generating" || job.status === "judging" || job.status === "sharing";
+}
+
+function safeJobError(phase: AttemptJob["phase"]): string {
+  if (phase === "memory") return "DKG improvement memory could not be read.";
+  if (phase === "generation") return "The remote media job did not produce an artifact.";
+  if (phase === "judging") return "The artifact was produced, but blind evaluation did not complete.";
+  if (phase === "dkg") return "The artifact was saved, but its DKG snapshot was not shared.";
+  return "The attempt did not complete.";
 }
 
 function buildRunLedger(sessionId: string, target: TargetSpec, attempts: AttemptRecord[]): RunLedgerKa {
+  const targetRef = targetReference(target);
   return {
     "@context": demoContext,
-    "@id": `demo:run-ledger/${sessionId}/${target.id}`,
+    "@id": `demo:run-ledger/${sessionId}/${targetRef}`,
     "@type": "demo:RunLedger",
-    "demo:targetId": target.id,
+    "demo:targetId": targetRef,
     "demo:sessionId": sessionId,
     "demo:hasAttempt": attempts.map((attempt) => ({
-      "@id": `demo:attempt/${sessionId}/${target.id}/${attempt.attemptNumber}`,
+      "@id": `demo:attempt/${sessionId}/${targetRef}/${attempt.attemptNumber}`,
       "@type": "demo:GenerationAttempt",
       "demo:attemptNumber": attempt.attemptNumber,
-      "demo:promptSummary": attempt.promptSummary,
+      "demo:promptHash": attempt.promptHash,
+      "demo:memoryObservationCount": attempt.memoryUsed.length,
       "demo:usedDkgMemory": attempt.usedDkgMemory,
       "demo:mediaType": attempt.mediaType,
       "demo:generationCapability": attempt.generationCapability,
@@ -443,8 +688,8 @@ function buildRunLedger(sessionId: string, target: TargetSpec, attempts: Attempt
       "demo:outputHash": attempt.outputHash,
       "demo:score": attempt.score,
       "demo:pass": attempt.pass,
-      "demo:judgeOutputSummary": attempt.judgeOutputSummary,
-      "demo:judgeReference": attempt.judgeReference,
+      "demo:judgeOutputSummary": sanitizeDkgMemoryText(attempt.judgeOutputSummary),
+      "demo:judgeReference": sanitizeDkgMemoryText(attempt.judgeReference ?? ""),
       "demo:judgeScope": attempt.judgeScope,
       "demo:createdAt": attempt.createdAt
     }))
@@ -457,6 +702,7 @@ function buildImprovementMemory(
   attempts: AttemptRecord[],
   updatedAt = new Date().toISOString()
 ): ImprovementMemoryKa {
+  const targetRef = targetReference(target);
   const bestAttempt = attempts.reduce<AttemptRecord | undefined>(
     (best, attempt) => (!best || attempt.score > best.score ? attempt : best),
     undefined
@@ -465,20 +711,21 @@ function buildImprovementMemory(
   const successful = attempts
     .filter((attempt) => attempt.score >= target.targetScore)
     .slice(-3)
-    .map((attempt) => attempt.judgeOutputSummary);
+    .map((attempt) => sanitizeDkgMemoryText(attempt.judgeOutputSummary));
+  const latestObservation = latest ? sanitizeDkgMemoryText(latest.judgeOutputSummary) : "";
   return {
     "@context": demoContext,
-    "@id": `demo:improvement-memory/${sessionId}/${target.id}`,
+    "@id": `demo:improvement-memory/${sessionId}/${targetRef}`,
     "@type": "demo:ImprovementMemory",
-    "demo:targetId": target.id,
+    "demo:targetId": targetRef,
     "demo:sessionId": sessionId,
     "demo:currentBestAttempt": bestAttempt
-      ? `demo:attempt/${sessionId}/${target.id}/${bestAttempt.attemptNumber}`
+      ? `demo:attempt/${sessionId}/${targetRef}/${bestAttempt.attemptNumber}`
       : undefined,
-    "demo:knownFailure": latest && latest.score < target.targetScore ? [latest.judgeOutputSummary] : [],
+    "demo:knownFailure": latest && latest.score < target.targetScore ? [latestObservation] : [],
     "demo:successfulPattern": successful,
     "demo:nextPromptStrategy": latest
-      ? `Improve the next prompt using this blind-judge observation: ${latest.judgeOutputSummary}`
+      ? sanitizeDkgMemoryText(`Improve the next prompt using this blind-judge observation: ${latestObservation}`)
       : "Run the first attempt from the target brief, then judge it before creating improvement memory.",
     "demo:latestScore": latest?.score ?? 0,
     "demo:updatedAt": updatedAt

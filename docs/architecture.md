@@ -21,3 +21,13 @@ The important behavior is not storage by itself. The important behavior is that 
 DKG should hold graph-shaped facts, references, hashes, scores, and reviewable summaries. It should not hold secrets, private media, raw private prompts, local paths, or hidden reasoning.
 
 Livepeer should remain the media execution layer. DKG should not be used as bulk video storage.
+
+## Repair acceptance
+
+- [x] Every attempt is persisted as a project-bound job before remote work starts.
+- [x] Switching or creating a project cannot move or erase an in-flight attempt.
+- [x] The UI shows running phases, durable failures, each artifact, and both Knowledge Asset snapshots per Try.
+- [x] A DKG-assisted Try shows the sanitized observations actually used and a fingerprint of the newly composed prompt.
+- [x] The blind judge receives only the target criteria and artifact.
+- [x] Shared Knowledge Assets omit target text, criteria text, avoid text, prompt text, personal data, and secrets.
+- [x] Each DKG snapshot uses an immutable session-and-Try-scoped asset name and is verified by readback.

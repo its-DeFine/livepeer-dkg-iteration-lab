@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { DemoState, WorkspaceState } from "../shared/types.js";
 
@@ -21,7 +21,11 @@ export class JsonStateStore {
   }
 
   async writeWorkspace(state: WorkspaceState): Promise<void> {
-    await this.writeFile(workspaceStateFile, JSON.stringify(state, null, 2));
+    const filePath = path.join(this.dataDir, workspaceStateFile);
+    const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(temporaryPath, JSON.stringify(state, null, 2));
+    await rename(temporaryPath, filePath);
   }
 
   async writeJson(name: string, value: unknown): Promise<string> {

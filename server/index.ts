@@ -74,5 +74,11 @@ app.listen(port, "0.0.0.0", () => {
 });
 
 function sanitizeError(error: Error): string {
-  return error.message.replace(/Bearer\s+[A-Za-z0-9._-]+/g, "Bearer [redacted]");
+  const message = error.message.replace(/Bearer\s+[A-Za-z0-9._-]+/g, "Bearer [redacted]");
+  if (
+    /dkg|knowledge asset|assertion|shared.?memory|triple-count|merkle|promot|context graph/i.test(message)
+  ) {
+    return "The artifact was saved, but the DKG memory snapshot could not be finalized. Your completed iterations are safe; retry the next DKG-backed run.";
+  }
+  return message;
 }

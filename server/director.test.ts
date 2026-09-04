@@ -52,4 +52,20 @@ describe("Director improvement loop", () => {
     expect(judgePrompt).not.toContain("Prompt sent");
     expect(judgePrompt).not.toContain(first.attempt.outputReference);
   });
+
+  it("keeps a completed artifact visible when the DKG write fails", async () => {
+    process.env.DKG_MODE = "cli";
+    process.env.DKG_CLI_BIN = "/missing/dkg-cli";
+    process.env.DKG_CONTEXT_GRAPH_NAME = "iteration-lab-test";
+    const dataDir = await mkdtemp(path.join(tmpdir(), "iteration-lab-dkg-failure-"));
+    const director = createDirector(dataDir);
+
+    await expect(director.runAttempt({ useDkgMemory: false })).rejects.toThrow();
+
+    const recovered = await director.getState();
+    expect(recovered.attempts).toHaveLength(1);
+    expect(recovered.iterationSnapshots).toHaveLength(1);
+    expect(recovered.attempts[0].judgeScope).toBe("blind-artifact");
+    expect(recovered.receipt.outputReferences).toHaveLength(1);
+  });
 });

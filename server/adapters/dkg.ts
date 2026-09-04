@@ -66,12 +66,13 @@ export class DkgCliAdapter implements DkgAdapter {
       "improvement-memory-ka.ttl",
       buildImprovementMemoryTurtle(state)
     );
+    const version = Math.max(1, state.attempts.length);
     const contextGraphId = await this.resolveContextGraphId();
-    const runLedgerKaName = scopedKaName(this.runLedgerKaName, state.sessionId);
-    const improvementMemoryKaName = scopedKaName(this.improvementMemoryKaName, state.sessionId);
+    const runLedgerKaName = scopedKaName(this.runLedgerKaName, state.sessionId, version);
+    const improvementMemoryKaName = scopedKaName(this.improvementMemoryKaName, state.sessionId, version);
 
-    await this.upsertKnowledgeAsset(runLedgerKaName, contextGraphId, runLedgerTurtle);
-    await this.upsertKnowledgeAsset(improvementMemoryKaName, contextGraphId, improvementMemoryTurtle);
+    await this.ensureVersionShared(runLedgerKaName, contextGraphId, runLedgerTurtle);
+    await this.ensureVersionShared(improvementMemoryKaName, contextGraphId, improvementMemoryTurtle);
 
     if (state.attempts.length > 0) {
       await this.verifyLatestAttemptReadable(contextGraphId, state);
@@ -115,59 +116,43 @@ export class DkgCliAdapter implements DkgAdapter {
     return createdId;
   }
 
-  private async upsertKnowledgeAsset(name: string, contextGraphId: string, inputFile: string): Promise<void> {
+  private async ensureVersionShared(name: string, contextGraphId: string, inputFile: string): Promise<void> {
     for (let attempt = 1; attempt <= 4; attempt += 1) {
       try {
-        await this.upsertKnowledgeAssetOnce(name, contextGraphId, inputFile);
-        return;
+        const status = await this.knowledgeAssetStatus(name, contextGraphId);
+        if (!status) {
+          await this.run(["ka", "create", name, "-c", contextGraphId, "--input-file", inputFile, "--share"]);
+        } else if (!isSharedKnowledgeAsset(status)) {
+          if (!isFinalizedKnowledgeAsset(status)) {
+            await this.run(["ka", "write", name, "-c", contextGraphId, "--input-file", inputFile]);
+            await this.run(["ka", "finalize", name, "-c", contextGraphId]);
+          }
+          await this.run(["ka", "share", name, "-c", contextGraphId]);
+        }
+
+        const verified = await this.knowledgeAssetStatus(name, contextGraphId);
+        if (verified && isSharedKnowledgeAsset(verified)) {
+          return;
+        }
+        throw new Error("DKG knowledge asset share is still pending.");
       } catch (error) {
-        if (!isTransientPromotionError(error) || attempt === 4) {
+        if (!isRetryableShareError(error) || attempt === 4) {
           throw error;
         }
-        await this.recoverTransientPromotion(name, contextGraphId);
         await delay(attempt * 1500);
       }
     }
   }
 
-  private async recoverTransientPromotion(name: string, contextGraphId: string): Promise<void> {
+  private async knowledgeAssetStatus(
+    name: string,
+    contextGraphId: string
+  ): Promise<Record<string, unknown> | null> {
     try {
-      await this.run(["assertion", "promote", name, "-c", contextGraphId]);
-    } catch (error) {
-      if (!isBenignPromotionRecoveryError(error)) {
-        throw error;
-      }
-    }
-  }
-
-  private async upsertKnowledgeAssetOnce(name: string, contextGraphId: string, inputFile: string): Promise<void> {
-    if (!(await this.knowledgeAssetExists(name, contextGraphId))) {
-      try {
-        await this.run(["ka", "create", name, "-c", contextGraphId, "--input-file", inputFile, "--share"]);
-        return;
-      } catch (error) {
-        if (!isExistingKnowledgeAssetEditError(error)) {
-          throw error;
-        }
-      }
-    }
-
-    await this.run(["ka", "pull-from", name, "-c", contextGraphId, "--layer", "swm", "--on-conflict", "replace"]);
-    await this.run(["ka", "write", name, "-c", contextGraphId, "--input-file", inputFile]);
-    await this.run(["ka", "finalize", name, "-c", contextGraphId]);
-    await this.run(["ka", "share", name, "-c", contextGraphId]);
-  }
-
-  private async knowledgeAssetExists(name: string, contextGraphId: string): Promise<boolean> {
-    try {
-      await this.run(["ka", "status", name, "-c", contextGraphId]);
-      return true;
+      return JSON.parse(await this.run(["ka", "status", name, "-c", contextGraphId])) as Record<string, unknown>;
     } catch (error) {
       if (error instanceof Error && /No knowledge asset/i.test(error.message)) {
-        return false;
-      }
-      if (isExistingKnowledgeAssetEditError(error)) {
-        return true;
+        return null;
       }
       throw error;
     }
@@ -244,18 +229,18 @@ function parseCreatedContextGraphId(output: string): string | undefined {
   return output.match(/ID:\s+([^\s]+)/)?.[1];
 }
 
-function isTransientPromotionError(error: unknown): boolean {
-  return error instanceof Error && /unfinished promote|retry assertionPromote|share operation|promotion/i.test(error.message);
+function isSharedKnowledgeAsset(status: Record<string, unknown>): boolean {
+  return status.memoryLayer === "SWM" || status.state === "promoted" || status.status === "swm-shared";
 }
 
-function isBenignPromotionRecoveryError(error: unknown): boolean {
-  return error instanceof Error && /No quads were promoted|already shared|already promoted|no triples|No quads/i.test(error.message);
+function isFinalizedKnowledgeAsset(status: Record<string, unknown>): boolean {
+  return status.state === "finalized" || status.status === "wm-finalized";
 }
 
-function isExistingKnowledgeAssetEditError(error: unknown): boolean {
+function isRetryableShareError(error: unknown): boolean {
   return (
     error instanceof Error &&
-    /already exists|exists|duplicate|already finalized|assertionFinalize|unfinished promote|in-place mutation|sanctioned edit loop|stale seal/i.test(
+    /already exists|already finalized|unfinished promote|retry assertionPromote|share operation|promotion|fan-out|watchdog|timeout|still pending/i.test(
       error.message
     )
   );
@@ -389,8 +374,8 @@ function writeMemoryNotes(
   });
 }
 
-function scopedKaName(baseName: string, sessionId: string): string {
-  return `${baseName}-${slug(sessionId)}`.slice(0, 120);
+function scopedKaName(baseName: string, sessionId: string, version: number): string {
+  return `${baseName}-${slug(sessionId)}-try-${version}`.slice(0, 120);
 }
 
 function targetIri(state: DemoState): string {

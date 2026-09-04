@@ -95,6 +95,16 @@ export function App() {
       setSelectedIteration(payload.attempt.attemptNumber);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Attempt failed.");
+      try {
+        const stateResponse = await fetch("/api/state");
+        if (stateResponse.ok) {
+          const recoveredState = (await stateResponse.json()) as DemoState;
+          setState(recoveredState);
+          setSelectedIteration(recoveredState.iterationSnapshots.at(-1)?.attemptNumber ?? "current");
+        }
+      } catch {
+        // Keep the last rendered state if the recovery read also fails.
+      }
     } finally {
       setLoading(false);
     }
@@ -163,6 +173,8 @@ export function App() {
     );
   }
 
+  const bestScore = state.attempts.reduce((best, attempt) => Math.max(best, attempt.score), 0);
+
   return (
     <main className="app-shell">
       <section className="hero">
@@ -174,20 +186,63 @@ export function App() {
             attempt leaves useful evidence for the next one.
           </p>
         </div>
-        <div className="status-row" aria-label="Integration status">
-          <StatusPill label="Livepeer gen" value={config?.livepeerMode ?? "mock"} active={config?.livepeerConfigured} />
-          <StatusPill label="DKG edge" value={config?.dkgMode ?? "file"} active={config?.dkgConfigured} />
-          <StatusPill label="Blind judge" value={config?.judgeMode ?? "mock"} active={config?.judgeConfigured} />
+        <div className="hero-aside">
+          <div className="hero-metric">
+            <span>Best result</span>
+            <strong>{bestScore}<small>/10</small></strong>
+            <b>{state.attempts.length} completed {state.attempts.length === 1 ? "run" : "runs"}</b>
+          </div>
+          <div className="status-row" aria-label="Integration status">
+            <StatusPill label="Livepeer" value={config?.livepeerMode ?? "mock"} active={config?.livepeerConfigured} />
+            <StatusPill label="DKG edge" value={config?.dkgMode ?? "file"} active={config?.dkgConfigured} />
+            <StatusPill label="Judge" value={config?.judgeMode ?? "mock"} active={config?.judgeConfigured} />
+          </div>
         </div>
       </section>
 
-      {error ? <div className="error-banner">{error}</div> : null}
+      {error ? (
+        <div className="error-banner" role="alert">
+          <ShieldCheck size={19} />
+          <div><strong>Memory sync needs another pass</strong><span>{error}</span></div>
+          <button className="notice-close" onClick={() => setError(null)} aria-label="Dismiss message">Close</button>
+        </div>
+      ) : null}
       {loading ? (
         <div className="run-banner">
           <Loader2 className="spin" size={16} />
           Generating the artifact, running an isolated evaluation, and writing the DKG memory assets.
         </div>
       ) : null}
+
+      <section className="command-deck">
+        <div className="command-copy">
+          <p className="history-kicker">Director controls</p>
+          <h2>Run the next iteration</h2>
+          <p>Generate a baseline from the brief, then let the Director retrieve the latest DKG memory for the next try.</p>
+        </div>
+        <div className="command-actions">
+          <div className="button-row">
+            <button onClick={() => runAttempt(false)} disabled={loading} title="Generate from the target brief only">
+              {loading ? <Loader2 className="spin" size={16} /> : <Play size={16} />}
+              Generate baseline
+            </button>
+            <button
+              className="secondary"
+              onClick={() => runAttempt(true)}
+              disabled={loading || state.attempts.length === 0}
+              title="Use the latest Improvement Memory Knowledge Asset"
+            >
+              <Brain size={16} />
+              Improve with DKG
+            </button>
+            <button className="ghost" onClick={reset} disabled={loading} title="Start a fresh demo session">
+              <RefreshCcw size={16} />
+              New session
+            </button>
+          </div>
+          <ScoreStrip attempts={state.attempts} targetScore={state.target.targetScore} />
+        </div>
+      </section>
 
       <Panel className="history-panel" icon={<History size={18} />} title="Iteration gallery">
         <div className="history-heading">
@@ -295,7 +350,7 @@ export function App() {
           <ScoreStrip attempts={state.attempts} targetScore={state.target.targetScore} />
         </Panel>
 
-        <Panel icon={<Archive size={18} />} title="Run ledger">
+        <Panel className="ledger-panel" icon={<Archive size={18} />} title="Run ledger">
           <div className="attempt-list">
             {state.attempts.length === 0 ? (
               <EmptyAttempt />
@@ -360,7 +415,7 @@ function StatusPill({ label, value, active }: { label: string; value: string; ac
 }
 
 function ScoreStrip({ attempts, targetScore }: { attempts: AttemptRecord[]; targetScore: number }) {
-  const slots = [1, 2, 3];
+  const slots = Array.from({ length: Math.max(3, attempts.length) }, (_, index) => index + 1);
   return (
     <div className="score-strip" aria-label="Attempt scores">
       {slots.map((slot) => {

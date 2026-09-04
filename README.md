@@ -88,7 +88,7 @@ DKG:
 - Use `DKG_MODE=cli` in Docker.
 - Run `./scripts/init-dkg-volume.sh` once to initialize the local DKG home volume.
 - Set `DKG_CONTEXT_GRAPH_NAME` to a short demo graph name. The app resolves or creates the full Context Graph ID.
-- The CLI adapter writes session-scoped Run Ledger and Improvement Memory Knowledge Assets and shares them to Shared Working Memory. Each reset starts a fresh KA pair so workshop retries do not reuse stale working drafts.
+- The CLI adapter writes an immutable, session-and-iteration-scoped Run Ledger and Improvement Memory snapshot pair to Shared Working Memory. Each later snapshot is cumulative, so the gallery can compare history without mutating an already shared assertion.
 - Publish to Verifiable Memory only when finality is useful and wallet/network setup is ready.
 
 ## DKG CLI Shape

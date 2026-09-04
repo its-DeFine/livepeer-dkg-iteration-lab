@@ -117,6 +117,7 @@ export function createDirector(dataDir: string) {
   }
 
   async function persist(state: DemoState): Promise<void> {
+    await writeLocalState(state);
     const references = await dkg.writeState(state);
     state.receipt.runLedgerReference = references.runLedgerReference;
     state.receipt.improvementMemoryReference = references.improvementMemoryReference;
